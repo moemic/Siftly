@@ -27,9 +27,16 @@ const ALLOWED_OPENAI_MODELS = [
   'o3',
 ] as const
 
-// Codex accepts the same model identifiers as the OpenAI backend. An empty
-// value deliberately means “use the CLI's configured default model”.
-const ALLOWED_CODEX_MODELS = ['', ...ALLOWED_OPENAI_MODELS] as const
+const ALLOWED_CODEX_MODELS = [
+  '',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex-spark',
+] as const
 
 const ALLOWED_MINIMAX_MODELS = [
   'MiniMax-M2.7',

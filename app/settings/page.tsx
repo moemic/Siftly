@@ -47,10 +47,13 @@ const OPENAI_MODELS = [
 
 const CODEX_MODELS = [
   { value: '', label: 'CLIの既定モデル', description: 'Codexの設定に従う' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o mini', description: '高速・低コスト' },
-  { value: 'gpt-4o', label: 'GPT-4o', description: '高性能・マルチモーダル' },
-  { value: 'o4-mini', label: 'o4-mini', description: '推論（mini）' },
-  { value: 'o3', label: 'o3', description: '推論' },
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', description: '高性能' },
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', description: 'バランス型' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', description: '高速・低コスト' },
+  { value: 'gpt-5.5', label: 'GPT-5.5', description: '高性能' },
+  { value: 'gpt-5.4', label: 'GPT-5.4', description: '高性能' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini', description: '高速・低コスト' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', description: '高速' },
 ]
 
 const MINIMAX_MODELS = [

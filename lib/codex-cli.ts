@@ -4,6 +4,8 @@ import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { execCli } from './cli-exec'
 
+const CODEX_COMMAND = process.env.CODEX_CLI_PATH?.trim() || 'codex'
+
 export interface CodexCliOptions {
   model?: string
   timeoutMs?: number
@@ -17,14 +19,15 @@ export interface CodexCliResult<T = unknown> {
 
 export async function isCodexCliAvailable(): Promise<boolean> {
   try {
-    await execCli('codex', ['--version'], {
+    await execCli(CODEX_COMMAND, ['--version'], {
       encoding: 'utf8',
       timeout: 5000,
       maxBuffer: 1024 * 1024,
       windowsHide: true,
     })
     return true
-  } catch {
+  } catch (error) {
+    console.warn('[codex] CLI availability check failed:', error instanceof Error ? error.message : String(error))
     return false
   }
 }
@@ -46,7 +49,7 @@ export async function codexPrompt(
   args.push(prompt)
 
   try {
-    await execCli('codex', args, {
+    await execCli(CODEX_COMMAND, args, {
       encoding: 'utf8',
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,

@@ -1,7 +1,7 @@
 import prisma from '@/lib/db'
 import { buildImageContext } from '@/lib/image-context'
 import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/claude-cli-auth'
-import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
+import { codexPrompt } from '@/lib/codex-cli'
 import { getActiveAuthMode, getActiveCliModel, getActiveModel, getProvider } from '@/lib/settings'
 import { AIClient, resolveAIClient } from '@/lib/ai-client'
 import type { UiLanguage } from '@/lib/i18n'
@@ -314,17 +314,15 @@ export async function categorizeBatch(
 
   // Prefer CLI over SDK (avoids OAuth token extraction, uses CLI directly)
   if (provider === 'openai' && authMode === 'cli') {
-    if (await getCodexCliAvailability()) {
-      const result = await codexPrompt(prompt, { model: cliModel || undefined, timeoutMs: 60_000 })
-      if (result.success && result.data) {
-        try {
-          return parseCategorizationResponse(result.data, new Set(allSlugs))
-        } catch (parseErr) {
-          console.warn('[categorize] Codex CLI response parse failed, falling back to SDK:', parseErr)
-        }
-      } else {
-        console.warn('[categorize] Codex CLI failed, falling back to SDK:', result.error)
+    const result = await codexPrompt(prompt, { model: cliModel || undefined, timeoutMs: 60_000 })
+    if (result.success && result.data) {
+      try {
+        return parseCategorizationResponse(result.data, new Set(allSlugs))
+      } catch (parseErr) {
+        console.warn('[categorize] Codex CLI response parse failed, falling back to SDK:', parseErr)
       }
+    } else {
+      console.warn('[categorize] Codex CLI failed, falling back to SDK:', result.error)
     }
   } else if (provider === 'anthropic' && authMode === 'cli') {
     if (await getCliAvailability()) {
