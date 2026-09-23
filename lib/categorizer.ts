@@ -4,11 +4,13 @@ import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/cla
 import { codexPrompt } from '@/lib/codex-cli'
 import { getActiveAuthMode, getActiveCliModel, getActiveModel, getProvider } from '@/lib/settings'
 import { AIClient, resolveAIClient } from '@/lib/ai-client'
+import { categorizeWithJev, type JevFeedbackExample } from '@/lib/jev-categorizer'
 import type { UiLanguage } from '@/lib/i18n'
 import { threadContextFromArchive } from '@/lib/thread-context'
 
 const BATCH_SIZE = 20
 const MAX_CATEGORY_FEEDBACK_EXAMPLES = 40
+const CLI_RETRY_BATCH_SIZE = 5
 
 const DEFAULT_CATEGORIES = [
   {
@@ -156,6 +158,197 @@ export interface CategoryFeedbackExample {
   text: string
 }
 
+export type CategoryEngine = 'llm' | 'jev'
+
+export function getCategoryEngine(): CategoryEngine {
+  const configured = process.env.SIFTLY_CATEGORY_ENGINE?.trim().toLowerCase()
+  if (!configured || configured === 'llm') return 'llm'
+  if (configured === 'jev') return 'jev'
+  throw new Error(`Unsupported SIFTLY_CATEGORY_ENGINE: ${configured}`)
+}
+
+export function isJevCategorizationEnabled(): boolean {
+  return getCategoryEngine() === 'jev'
+}
+
+function validateCategorizationResults(
+  results: CategorizationResult[],
+  bookmarks: BookmarkForCategorization[],
+): CategorizationResult[] {
+  const expectedTweetIds = new Set(bookmarks.map((bookmark) => bookmark.tweetId))
+  const actualTweetIds = results.map((result) => result.tweetId)
+  if (
+    results.length !== bookmarks.length
+    || actualTweetIds.some((tweetId) => !expectedTweetIds.has(tweetId))
+    || new Set(actualTweetIds).size !== actualTweetIds.length
+    || results.some((result) => result.assignments.length === 0)
+  ) {
+    throw new Error('AI response did not contain one non-empty result for every bookmark')
+  }
+  return results
+}
+
+function keepValidCategorizationResults(
+  bookmarks: BookmarkForCategorization[],
+  results: CategorizationResult[],
+): { results: CategorizationResult[]; missingBookmarks: BookmarkForCategorization[] } {
+  const expectedTweetIds = new Set(bookmarks.map((bookmark) => bookmark.tweetId))
+  const seenTweetIds = new Set<string>()
+  const invalidTweetIds = new Set<string>()
+  const resultByTweetId = new Map<string, CategorizationResult>()
+
+  for (const result of results) {
+    if (!expectedTweetIds.has(result.tweetId)) continue
+    if (seenTweetIds.has(result.tweetId)) {
+      invalidTweetIds.add(result.tweetId)
+      resultByTweetId.delete(result.tweetId)
+      continue
+    }
+    seenTweetIds.add(result.tweetId)
+    if (result.assignments.length === 0) {
+      invalidTweetIds.add(result.tweetId)
+      continue
+    }
+    resultByTweetId.set(result.tweetId, result)
+  }
+
+  const validResults = bookmarks.flatMap((bookmark) => {
+    const result = resultByTweetId.get(bookmark.tweetId)
+    return result && !invalidTweetIds.has(bookmark.tweetId) ? [result] : []
+  })
+  const validTweetIds = new Set(validResults.map((result) => result.tweetId))
+  return {
+    results: validResults,
+    missingBookmarks: bookmarks.filter((bookmark) => !validTweetIds.has(bookmark.tweetId)),
+  }
+}
+
+async function categorizeWithLlm(
+  bookmarks: BookmarkForCategorization[],
+  client: AIClient | null,
+  categoryDescriptions: Record<string, string>,
+  allSlugs: string[],
+  language: UiLanguage,
+  feedbackExamples: CategoryFeedbackExample[],
+): Promise<CategorizationResult[]> {
+  const prompt = buildCategorizationPrompt(bookmarks, categoryDescriptions, allSlugs, language, feedbackExamples)
+  const provider = await getProvider()
+  const authMode = await getActiveAuthMode()
+  const cliModel = await getActiveCliModel()
+
+  // Prefer CLI over SDK (avoids OAuth token extraction, uses CLI directly).
+  const useCli = provider === 'openai' && authMode === 'cli'
+    || provider === 'anthropic' && authMode === 'cli' && await getCliAvailability()
+  if (useCli) {
+    const requestCli = async (target: BookmarkForCategorization[]) => {
+      const targetPrompt = target.length === bookmarks.length
+        ? prompt
+        : buildCategorizationPrompt(target, categoryDescriptions, allSlugs, language, feedbackExamples)
+      try {
+        const response = provider === 'openai'
+          ? await codexPrompt(targetPrompt, {
+              model: cliModel || undefined,
+              reasoningEffort: 'xhigh',
+              timeoutMs: 180_000,
+            })
+          : await claudePrompt(targetPrompt, { model: modelNameToCliAlias(cliModel), timeoutMs: 60_000 })
+        if (!response.success || !response.data) {
+          return { results: [], responseReceived: false, error: response.error ?? 'CLI request failed' }
+        }
+        try {
+          return {
+            results: parseCategorizationResponse(response.data, new Set(allSlugs)),
+            responseReceived: true,
+            error: undefined,
+          }
+        } catch (error) {
+          return { results: [], responseReceived: true, error }
+        }
+      } catch (error) {
+        return { results: [], responseReceived: false, error }
+      }
+    }
+
+    const initial = await requestCli(bookmarks)
+    const recoveredByTweetId = new Map<string, CategorizationResult>()
+    const initialValid = keepValidCategorizationResults(bookmarks, initial.results)
+    for (const result of initialValid.results) recoveredByTweetId.set(result.tweetId, result)
+
+    if (initial.responseReceived && initialValid.missingBookmarks.length > 0) {
+      console.warn(`[categorize] CLI omitted or invalidated ${initialValid.missingBookmarks.length}/${bookmarks.length} results; retrying missing bookmarks in groups of ${CLI_RETRY_BATCH_SIZE}`)
+      for (let index = 0; index < initialValid.missingBookmarks.length; index += CLI_RETRY_BATCH_SIZE) {
+        const retryBookmarks = initialValid.missingBookmarks.slice(index, index + CLI_RETRY_BATCH_SIZE)
+        const retry = await requestCli(retryBookmarks)
+        if (retry.error) console.warn('[categorize] Smaller CLI retry failed:', retry.error)
+        const retryValid = keepValidCategorizationResults(retryBookmarks, retry.results)
+        for (const result of retryValid.results) recoveredByTweetId.set(result.tweetId, result)
+      }
+    } else if (initial.error) {
+      console.warn('[categorize] CLI categorization failed:', initial.error)
+    }
+
+    const recovered = bookmarks.flatMap((bookmark) => {
+      const result = recoveredByTweetId.get(bookmark.tweetId)
+      return result ? [result] : []
+    })
+    const missingBookmarks = bookmarks.filter((bookmark) => !recoveredByTweetId.has(bookmark.tweetId))
+    if (missingBookmarks.length === 0) return recovered
+    if (recovered.length > 0) {
+      console.warn(`[categorize] ${missingBookmarks.length}/${bookmarks.length} bookmarks remain unclassified after CLI retry`)
+    }
+
+    if (!client) {
+      if (recovered.length > 0) return recovered
+      throw new Error(initial.error instanceof Error ? initial.error.message : 'No CLI result and no API key configured for SDK fallback.')
+    }
+
+    try {
+      const model = await getActiveModel()
+      const fallbackPrompt = missingBookmarks.length === bookmarks.length
+        ? prompt
+        : buildCategorizationPrompt(missingBookmarks, categoryDescriptions, allSlugs, language, feedbackExamples)
+      const response = await client.createMessage({
+        model,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: fallbackPrompt }],
+      })
+      if (!response.text) throw new Error('No text content in AI response')
+      const sdkResults = validateCategorizationResults(
+        parseCategorizationResponse(response.text, new Set(allSlugs)),
+        missingBookmarks,
+      )
+      const sdkByTweetId = new Map(sdkResults.map((result) => [result.tweetId, result]))
+      return bookmarks.flatMap((bookmark) => {
+        const result = recoveredByTweetId.get(bookmark.tweetId) ?? sdkByTweetId.get(bookmark.tweetId)
+        return result ? [result] : []
+      })
+    } catch (error) {
+      console.warn('[categorize] SDK fallback failed for missing bookmarks:', error)
+      if (recovered.length > 0) return recovered
+      throw error
+    }
+  }
+
+  // Fallback to SDK (requires API key)
+  if (!client) {
+    throw new Error('No CLI available and no API key configured.')
+  }
+
+  const model = await getActiveModel()
+  const response = await client.createMessage({
+    model,
+    max_tokens: 2048,
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  if (!response.text) throw new Error('No text content in AI response')
+
+  return validateCategorizationResults(
+    parseCategorizationResponse(response.text, new Set(allSlugs)),
+    bookmarks,
+  )
+}
+
 export async function seedDefaultCategories(): Promise<void> {
   const existing = await prisma.category.findMany({ select: { slug: true } })
   const existingSlugs = new Set(existing.map((c) => c.slug))
@@ -178,11 +371,11 @@ export function buildCategorizationPrompt(
 
   const tweetData = bookmarks.map((b) => {
     const entry: Record<string, unknown> = { id: b.tweetId, text: b.text.slice(0, 400) }
-    const imgCtx = buildImageContext(b.imageTags)
+    const imgCtx = buildImageContext(b.imageTags).slice(0, 1_200)
     if (imgCtx) entry.images = imgCtx
     if (b.semanticTags?.length) entry.aiTags = b.semanticTags.slice(0, 20).join(', ')
     if (b.hashtags?.length) entry.hashtags = b.hashtags.slice(0, 10).join(', ')
-    if (b.tools?.length) entry.tools = b.tools.join(', ')
+    if (b.tools?.length) entry.tools = b.tools.slice(0, 10).join(', ')
     return entry
   })
 
@@ -199,6 +392,7 @@ Available categories:
 ${categoriesList}
 
 Rules:
+- Return exactly one result for every input bookmark, with each input tweetId appearing exactly once. Never omit a bookmark; use general only when no specific category fits.
 - Assign only 1–3 clearly relevant categories per bookmark
 - Confidence must be 0.5–1.0: 0.9+ for clear matches, 0.6–0.8 for reasonable matches, and 0.5 for borderline cases
 - Prefer a specific category over general; use general only when nothing else fits
@@ -226,6 +420,7 @@ ${JSON.stringify(tweetData, null, 1)}`
 ${categoriesList}
 
 分類ルール:
+- 入力したすべてのブックマークについて、各tweetIdがちょうど1回現れる結果を必ず返す。ブックマークを省略しない。具体的なカテゴリに当てはまらない場合だけgeneralを使う。
 - 1件のブックマークに、明確に当てはまるカテゴリを1〜3個だけ付与する
 - 確信度は0.5〜1.0。明確なら0.9以上、妥当なら0.6〜0.8、境界例なら0.5を使う
 - 「一般」より具体的なカテゴリを優先し、本当に他が当てはまらない場合だけ general を使う
@@ -276,24 +471,27 @@ export async function getRecentCategoryFeedbackExamples(): Promise<CategoryFeedb
 }
 
 function parseCategorizationResponse(text: string, validSlugs: Set<string>): CategorizationResult[] {
-  const jsonMatch = text.match(/\[[\s\S]*\]/)
-  if (!jsonMatch) throw new Error('No JSON array found in AI response')
+  const unfencedText = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  const parsed: unknown = JSON.parse(unfencedText)
+  if (!Array.isArray(parsed)) throw new Error('AI response is not a JSON array')
 
-  const parsed: unknown = JSON.parse(jsonMatch[0])
-  if (!Array.isArray(parsed)) throw new Error('Claude response is not an array')
-
-  return (parsed as Record<string, unknown>[]).map((item): CategorizationResult => {
-    const tweetId = String(item.tweetId ?? '')
-    const rawAssignments = Array.isArray(item.assignments) ? item.assignments : []
-
-    const assignments: CategoryAssignment[] = (rawAssignments as Record<string, unknown>[])
-      .map((a) => ({
-        category: String(a.category ?? ''),
-        confidence: typeof a.confidence === 'number' ? Math.min(1, Math.max(0.5, a.confidence)) : 0.8,
-      }))
-      .filter((a) => validSlugs.has(a.category))
-
-    return { tweetId, assignments }
+  return parsed.flatMap((item): CategorizationResult[] => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const record = item as Record<string, unknown>
+    const rawAssignments = Array.isArray(record.assignments) ? record.assignments : []
+    const assignments = rawAssignments.flatMap((rawAssignment): CategoryAssignment[] => {
+      if (!rawAssignment || typeof rawAssignment !== 'object' || Array.isArray(rawAssignment)) return []
+      const assignment = rawAssignment as Record<string, unknown>
+      const category = String(assignment.category ?? '')
+      if (!validSlugs.has(category)) return []
+      return [{
+        category,
+        confidence: typeof assignment.confidence === 'number'
+          ? Math.min(1, Math.max(0.5, assignment.confidence))
+          : 0.8,
+      }]
+    })
+    return [{ tweetId: String(record.tweetId ?? ''), assignments }]
   })
 }
 
@@ -303,67 +501,66 @@ export async function categorizeBatch(
   categoryDescriptions: Record<string, string> = {},
   allSlugs: string[] = DEFAULT_SLUGS,
   language: UiLanguage = 'ja',
+  shouldAbort?: () => boolean,
 ): Promise<CategorizationResult[]> {
   if (bookmarks.length === 0) return []
 
   const feedbackExamples = await getRecentCategoryFeedbackExamples()
-  const prompt = buildCategorizationPrompt(bookmarks, categoryDescriptions, allSlugs, language, feedbackExamples)
-  const provider = await getProvider()
-  const authMode = await getActiveAuthMode()
-  const cliModel = await getActiveCliModel()
+  const engine = getCategoryEngine()
+  if (engine === 'llm') {
+    return categorizeWithLlm(bookmarks, client, categoryDescriptions, allSlugs, language, feedbackExamples)
+  }
 
-  // Prefer CLI over SDK (avoids OAuth token extraction, uses CLI directly)
-  if (provider === 'openai' && authMode === 'cli') {
-    const result = await codexPrompt(prompt, { model: cliModel || undefined, timeoutMs: 60_000 })
-    if (result.success && result.data) {
+  const jevOutcomes = await categorizeWithJev(
+    bookmarks,
+    categoryDescriptions,
+    allSlugs,
+    language,
+    feedbackExamples.slice(0, 12) satisfies JevFeedbackExample[],
+    shouldAbort,
+  )
+  const accepted = jevOutcomes.flatMap((outcome) => outcome.result ? [outcome.result] : [])
+  const fallbackBookmarks = jevOutcomes
+    .filter((outcome) => !outcome.result)
+    .map((outcome) => outcome.bookmark)
+
+  if (fallbackBookmarks.length > 0) {
+    const reasons = new Set(jevOutcomes.filter((outcome) => !outcome.result).map((outcome) => outcome.fallbackReason))
+    console.info(`[categorize] Jev accepted ${accepted.length}/${bookmarks.length}; falling back ${fallbackBookmarks.length} (${[...reasons].join(', ')})`)
+    const fallback: CategorizationResult[] = []
+    for (const bookmark of fallbackBookmarks) {
+      if (shouldAbort?.()) break
       try {
-        return parseCategorizationResponse(result.data, new Set(allSlugs))
-      } catch (parseErr) {
-        console.warn('[categorize] Codex CLI response parse failed, falling back to SDK:', parseErr)
-      }
-    } else {
-      console.warn('[categorize] Codex CLI failed, falling back to SDK:', result.error)
-    }
-  } else if (provider === 'anthropic' && authMode === 'cli') {
-    if (await getCliAvailability()) {
-      const result = await claudePrompt(prompt, { model: modelNameToCliAlias(cliModel), timeoutMs: 60_000 })
-      if (result.success && result.data) {
-        try {
-          return parseCategorizationResponse(result.data, new Set(allSlugs))
-        } catch (parseErr) {
-          console.warn('[categorize] CLI response parse failed, falling back to SDK:', parseErr)
-        }
-      } else {
-        console.warn('[categorize] CLI failed, falling back to SDK:', result.error)
+        fallback.push(...await categorizeWithLlm(
+          [bookmark],
+          client,
+          categoryDescriptions,
+          allSlugs,
+          language,
+          feedbackExamples.slice(0, 12),
+        ))
+      } catch (error) {
+        console.warn('[categorize] Luna fallback failed for', bookmark.tweetId, error instanceof Error ? error.message : error)
       }
     }
+    if (accepted.length === 0 && fallback.length === 0) {
+      throw new Error('Jev and Luna failed to classify every bookmark')
+    }
+    return [...accepted, ...fallback]
   }
 
-  // Fallback to SDK (requires API key)
-  if (!client) {
-    throw new Error('No CLI available and no API key configured.')
-  }
-
-  const model = await getActiveModel()
-  const response = await client.createMessage({
-    model,
-    max_tokens: 2048,
-    messages: [{ role: 'user', content: prompt }],
-  })
-
-  if (!response.text) throw new Error('No text content in AI response')
-
-  return parseCategorizationResponse(response.text, new Set(allSlugs))
+  console.info(`[categorize] Jev accepted ${accepted.length}/${bookmarks.length}`)
+  return accepted
 }
 
 export async function writeCategoryResults(
   results: CategorizationResult[],
   options: { bookmarkByTweetId?: Map<string, string>; replaceAiCategories?: boolean; updateEnrichedAt?: boolean } = {},
-): Promise<void> {
-  if (results.length === 0) return
+): Promise<string[]> {
+  if (results.length === 0) return []
 
   const tweetIds = results.map((r) => r.tweetId).filter(Boolean)
-  if (tweetIds.length === 0) return
+  if (tweetIds.length === 0) return []
 
   // Batch-fetch all categories and bookmarks at once (eliminates N+1 queries)
   const [categories, bookmarks] = await Promise.all([
@@ -376,6 +573,7 @@ export async function writeCategoryResults(
 
   const categoryBySlug = new Map(categories.map((c) => [c.slug, c.id]))
   const bookmarkByTweetId = options.bookmarkByTweetId ?? new Map(bookmarks.map((b) => [b.tweetId, b.id]))
+  const bookmarkIdsToUpdate: string[] = []
 
   // Read feedback and write AI results in one transaction so a manual edit cannot race this check.
   await prisma.$transaction(async (tx) => {
@@ -390,7 +588,6 @@ export async function writeCategoryResults(
       feedbackByBookmark.set(item.bookmarkId, actions)
     }
 
-    const bookmarkIdsToUpdate: string[] = []
     for (const result of results) {
       if (!result.tweetId || result.assignments.length === 0) continue
       const bookmarkId = bookmarkByTweetId.get(result.tweetId)
@@ -427,6 +624,8 @@ export async function writeCategoryResults(
       })
     }
   })
+
+  return [...new Set(bookmarkIdsToUpdate)]
 }
 
 export function mapBookmarkForCategorization(b: {
@@ -526,8 +725,11 @@ export async function categorizeAll(
       })
       const batch = rows.map(mapBookmarkForCategorization)
       try {
-        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
-        await writeCategoryResults(results)
+        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs, 'ja', shouldAbort)
+        const savedBookmarkIds = await writeCategoryResults(results)
+        if (savedBookmarkIds.length < batch.length) {
+          console.warn(`[categorize] ${batch.length - savedBookmarkIds.length} bookmarks remain unclassified`)
+        }
       } catch (err) {
         console.error(`Error categorizing batch at index ${i}:`, err)
       }
@@ -554,8 +756,11 @@ export async function categorizeAll(
 
       const batch = rows.map(mapBookmarkForCategorization)
       try {
-        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
-        await writeCategoryResults(results)
+        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs, 'ja', shouldAbort)
+        const savedBookmarkIds = await writeCategoryResults(results)
+        if (savedBookmarkIds.length < batch.length) {
+          console.warn(`[categorize] ${batch.length - savedBookmarkIds.length} bookmarks remain unclassified`)
+        }
       } catch (err) {
         console.error('Error categorizing batch:', err)
       }

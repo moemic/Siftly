@@ -8,6 +8,7 @@ const CODEX_COMMAND = process.env.CODEX_CLI_PATH?.trim() || 'codex'
 
 export interface CodexCliOptions {
   model?: string
+  reasoningEffort?: string
   timeoutMs?: number
 }
 
@@ -36,7 +37,7 @@ export async function codexPrompt(
   prompt: string,
   options: CodexCliOptions = {}
 ): Promise<CodexCliResult<string>> {
-  const { model, timeoutMs = 120_000 } = options
+  const { model, reasoningEffort, timeoutMs = 120_000 } = options
 
   // Write output to a temp file so we can capture the model's final message cleanly
   const outFile = join(tmpdir(), `codex-out-${randomUUID()}.txt`)
@@ -46,6 +47,7 @@ export async function codexPrompt(
   // CODEX_HOME when user config is ignored.
   const args = ['exec', '--ignore-user-config', '--output-last-message', outFile]
   if (model) args.push('--model', model)
+  if (reasoningEffort) args.push('--config', `model_reasoning_effort="${reasoningEffort}"`)
   args.push(prompt)
 
   try {

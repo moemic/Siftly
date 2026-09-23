@@ -47,9 +47,8 @@ const OPENAI_MODELS = [
 
 const CODEX_MODELS = [
   { value: '', label: 'CLIの既定モデル', description: 'Codexの設定に従う' },
-  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', description: '高性能' },
-  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', description: 'バランス型' },
-  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', description: '高速・低コスト' },
+  { value: 'gpt-6-sol', label: 'GPT-6 Sol', description: '高性能' },
+  { value: 'gpt-6-luna', label: 'GPT-6 Luna', description: '高速・低コスト' },
   { value: 'gpt-5.5', label: 'GPT-5.5', description: '高性能' },
   { value: 'gpt-5.4', label: 'GPT-5.4', description: '高性能' },
   { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini', description: '高速・低コスト' },

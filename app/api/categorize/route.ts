@@ -171,20 +171,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           const rows = selected.slice(index, index + CAT_BATCH_SIZE)
           const batch = rows.map(mapBookmarkForCategorization)
           try {
-            const results = await categorizeBatch(batch, client, descriptions, slugs, language)
+            const results = await categorizeBatch(batch, client, descriptions, slugs, language, shouldAbort)
             const expectedTweetIds = new Set(batch.map((bookmark) => bookmark.tweetId))
             const actualTweetIds = results.map((result) => result.tweetId)
-            const valid = results.length === batch.length
+            const valid = results.length > 0
               && actualTweetIds.every((tweetId) => expectedTweetIds.has(tweetId))
               && new Set(actualTweetIds).size === actualTweetIds.length
               && results.every((result) => result.assignments.length > 0)
-            if (!valid) throw new Error('AI response did not contain one non-empty result for every selected bookmark')
-            await writeCategoryResults(results, {
+            if (!valid) throw new Error('AI response did not contain any valid selected bookmark results')
+            if (results.length < batch.length) {
+              setState({ lastError: `${batch.length - results.length} bookmarks remain unclassified after AI retries` })
+            }
+            const savedBookmarkIds = await writeCategoryResults(results, {
               bookmarkByTweetId: new Map(rows.map((bookmark) => [bookmark.tweetId, bookmark.id])),
               replaceAiCategories: true,
               updateEnrichedAt: false,
             })
-            counts.categorized += rows.length
+            counts.categorized += savedBookmarkIds.length
+            if (savedBookmarkIds.length < batch.length) {
+              setState({ lastError: `${batch.length - savedBookmarkIds.length} selected bookmarks remain unclassified` })
+            }
           } catch (error) {
             setState({ lastError: error instanceof Error ? error.message.slice(0, 200) : String(error) })
           }
@@ -330,6 +336,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             catFlushing = true
             try {
               while (catPending.length > 0) {
+                if (shouldAbort()) break
                 if (!final && catPending.length < CAT_BATCH_SIZE) break
                 const ids = catPending.splice(0, CAT_BATCH_SIZE)
                 if (ids.length === 0) break
@@ -339,12 +346,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 })
                 const batch = rows.map(mapBookmarkForCategorization)
                 try {
-                  const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs, language)
-                  await writeCategoryResults(results)
-                  counts.categorized += ids.length
+                  const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs, language, shouldAbort)
+                  const savedBookmarkIds = await writeCategoryResults(results)
+                  counts.categorized += savedBookmarkIds.length
                   setState({ stageCounts: { ...counts } })
+                  if (savedBookmarkIds.length < batch.length) {
+                    setState({ lastError: `${batch.length - savedBookmarkIds.length} bookmarks remain unclassified` })
+                  }
                 } catch (catErr) {
                   console.error('[parallel] categorize batch error:', catErr)
+                  setState({ lastError: catErr instanceof Error ? catErr.message.slice(0, 200) : String(catErr) })
                 }
               }
             } finally {
@@ -479,7 +490,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         stage: null,
         done: wasStopped ? getState().done : total,
         total,
-        error: wasStopped ? 'Stopped by user' : null,
+        error: wasStopped ? 'Stopped by user' : getState().lastError,
       })
     })
     .catch((err) => {

@@ -61,6 +61,17 @@ describe('Settings POST', () => {
     })
   })
 
+  it.each(['gpt-6-sol', 'gpt-6-luna'])('Codexモデル %s を保存する', async (model) => {
+    const response = await POST(new Request('http://localhost/api/settings', {
+      method: 'POST', body: JSON.stringify({ codexCliModel: model }),
+    }) as never)
+    await expect(response.json()).resolves.toEqual({ saved: true })
+    expect(mocks.upsert).toHaveBeenCalledWith({
+      where: { key: 'codexCliModel' }, update: { value: model },
+      create: { key: 'codexCliModel', value: model },
+    })
+  })
+
   it('未知の認証方式を拒否する', async () => {
     const response = await POST(new Request('http://localhost/api/settings', {
       method: 'POST',
