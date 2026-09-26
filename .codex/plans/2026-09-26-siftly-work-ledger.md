@@ -216,6 +216,8 @@ flowchart LR
 
 **2026-09-27の記録:** 開発者ポータルをブラウザーで開いたが、Xログインを求められ、利用枠を確認できなかった。認証情報の入力・X API呼び出しはしていない。ユーザーへ回復確認を質問済み。回復前の自動取得も防ぐため、`com.moemic.siftly.live-import`だけ`disable`・`bootout`し、`print-disabled gui/501`の`=> disabled`と未登録を確認。mainと週次分類は止めていない。
 
+**追記:** Chromeのタブ一覧に既存の「Developer Console」があることは分かったが、画面の読み取り時にブラウザー接続が失敗し、ページ内容は確認できなかった。利用枠の回復を示す証拠にはならない。computer-useの案内に従い、環境診断が必要ならユーザーに`hermes computer-use doctor`の実行を依頼する。引き続き、枠の回復が確認できるまでは取得ジョブを無効のままにする。
+
 **次の作業（回復確認後だけ）:** まず実取得APIを`scheduled:true, maxPages:1`で1回検証し、件数・complete/hasMore/warnings・保存済みカーソルと安全なDiscord通知を確認する。想定外の403/429なら再取得しない。新規/削除済み/途中失敗など自然に発生しないケースはモック結果と実観測を区別し、失敗を意図的に起こすために余分なX API要求をしない。確認が成功したら下記で同じ月・木10時設定を復帰し、`launchctl print`で登録・calendar triggerを確認する。新たなジョブ基盤は不要。
 
 ```sh
