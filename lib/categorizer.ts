@@ -283,12 +283,12 @@ async function categorizeWithLlm(
         if (shouldAbort?.()) break
         const retryBookmarks = initialValid.missingBookmarks.slice(index, index + CLI_RETRY_BATCH_SIZE)
         const retry = await requestCli(retryBookmarks)
-        if (retry.error) console.warn('[categorize] Smaller CLI retry failed:', retry.error)
+        if (retry.error) console.warn('[categorize] Smaller CLI retry failed')
         const retryValid = keepValidCategorizationResults(retryBookmarks, retry.results)
         for (const result of retryValid.results) recoveredByTweetId.set(result.tweetId, result)
       }
     } else if (initial.error) {
-      console.warn('[categorize] CLI categorization failed:', initial.error)
+      console.warn('[categorize] CLI categorization failed')
     }
 
     const recovered = bookmarks.flatMap((bookmark) => {

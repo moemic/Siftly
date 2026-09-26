@@ -130,7 +130,7 @@ flowchart LR
 
 **受け入れ条件:** 最初のLLM要求中に停止を入れたテストで、追加retry/fallback要求が送られない。有効な既着結果を誤って破棄しない。通常時の5件以下の欠落retryと`xhigh`を維持する。
 
-**実装記録:** 2026-09-26、Codex。`lib/categorizer.ts`、`__tests__/categorizer-partial-response.test.ts`を変更。停止済み・初回応答中の停止・retry中の停止を検証。`npx vitest run __tests__/categorizer-partial-response.test.ts` — 4 tests passed。`npx tsc --noEmit`、対象ESLint — pass。外部LLM通信なし。コミット: `249d303`。
+**実装記録:** 2026-09-26、Codex。`lib/categorizer.ts`、`__tests__/categorizer-partial-response.test.ts`を変更。停止済み・初回応答中の停止・retry中の停止を検証。`npx vitest run __tests__/categorizer-partial-response.test.ts` — 4 tests passed。`npx tsc --noEmit`、対象ESLint — pass。外部LLM通信なし。コミット: `249d303`。QA-02の実CLIエラーでprompt引数がログ出力され得ると判明したため、Codex CLI失敗を定型化してprompt/feedbackを出さない回帰テストを追加（後続記録参照）。
 
 ### CAT-02 — 週次分類の件数と終了状態を保存結果にそろえる
 
@@ -182,11 +182,13 @@ flowchart LR
 
 ### QA-02 — OAuth分類とDiscordの実運用を一度だけ確認する
 
-**状態: 要実施。** ブラウザ設定はCodex CLIサインイン済み、GPT-6 Lunaを表示したが、LaunchAgent環境からの実分類要求とDiscordの受信は未確認。
+**状態: 一部実施・ブロック中。** CLI statusはCodex credential・binary利用可能、provider=`openai`、auth=`cli`、model=`gpt-6-luna`を返すが、合成サンプルでの実行はCodex CLI 0.153.0が「GPT-6 Luna is not supported when using Codex with a ChatGPT account」と拒否。Bookmark DBは0件の未分類で、分類書き込みなし。エラー出力がCLI引数を含むと分かったため、Codex CLI失敗は定型エラーへ置換し、prompt/feedback文字列を出さないテストを追加した。実Discord受信も未確認。
 
 **条件と手順:** QA-01完了後に実施する。最初に`/api/settings/cli-status`でCLIが利用可能と分かる範囲を確認する。小さい分類対象で通常分類を1回実行し、モデル・推論強度、保存数、run状態をログ/応答から確認する。次にDiscordへ結果が届いたことを確認する。秘密値・Bookmark本文をログに転記しない。X APIはこのQAで呼ばない。
 
 **受け入れ条件:** Codex CLIの利用可能性、GPT-6 Lunaと`xhigh`、分類状態の正常終了、Discord受信を個別に記録。どれか一つでも未確認なら全体を「完了」にしない。
+
+**現在の確認記録:** 2026-09-26。`/api/settings/cli-status`はCodex CLI利用可能・credentialsあり、設定APIはOpenAI CLI authと`gpt-6-luna`を返す。未分類Bookmark 0件。合成サンプルで試したGPT-6 Luna要求はCLI側で拒否され、実分類とDiscord受信は未実施。CLI失敗時のprompt漏えいを防ぐ修正は`__tests__/codex-cli.test.ts`で検証済み。引き続きChatGPT OAuthで利用できるLunaモデルを特定してから実分類を再試行する。
 
 ### QA-03 — Xの実取得と再開をquota回復後に確認する
 

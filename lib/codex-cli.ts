@@ -67,7 +67,7 @@ export async function codexPrompt(
       try { unlinkSync(outFile) } catch { /* ignore */ }
       return { success: false, error: 'Codex exec completed but no output file found' }
     }
-  } catch (err) {
+  } catch {
     // If the process ran but output was written before the error, try reading it
     try {
       const output = readFileSync(outFile, 'utf8').trim()
@@ -78,7 +78,7 @@ export async function codexPrompt(
     } catch { /* no output file */ }
 
     try { unlinkSync(outFile) } catch { /* ignore */ }
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+    return { success: false, error: 'Codex CLI request failed' }
   }
 }
 
