@@ -64,6 +64,32 @@ interface XBookmarksResponse {
   meta?: { next_token?: string; result_count?: number }
 }
 
+type ImportWarning = {
+  code: 'rate_limited' | 'reauth_required' | 'quota_exceeded' | 'upstream_error' | 'network_error' | 'invalid_response' | 'pagination_loop' | 'persistence_error'
+  message: string
+  upstreamStatus?: number
+  retryAfterSeconds?: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseXBookmarksResponse(value: unknown): XBookmarksResponse | null {
+  if (!isRecord(value)) return null
+  if (value.data !== undefined && (!Array.isArray(value.data) || value.data.some((tweet) =>
+    !isRecord(tweet) || typeof tweet.id !== 'string' || typeof tweet.text !== 'string'
+  ))) return null
+  if (value.meta !== undefined && (!isRecord(value.meta)
+    || (value.meta.next_token !== undefined && (typeof value.meta.next_token !== 'string' || !value.meta.next_token))
+    || (value.meta.result_count !== undefined && typeof value.meta.result_count !== 'number'))) return null
+  if (value.includes !== undefined && (!isRecord(value.includes)
+    || (value.includes.users !== undefined && !Array.isArray(value.includes.users))
+    || (value.includes.media !== undefined && !Array.isArray(value.includes.media)))) return null
+  if (value.data === undefined && value.meta?.result_count !== 0) return null
+  return value as XBookmarksResponse
+}
+
 interface ThreadRoot {
   bookmarkId: string
   tweet: XTweet
@@ -234,7 +260,12 @@ async function getValidToken(): Promise<string | null> {
 }
 
 export async function POST(req: NextRequest) {
-  const parsed: unknown = await req.json().catch(() => ({}))
+  let parsed: unknown
+  try {
+    parsed = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return NextResponse.json({ error: 'JSON body must be an object' }, { status: 400 })
   }
@@ -267,6 +298,10 @@ export async function POST(req: NextRequest) {
   let nextToken = body.nextToken?.trim() || undefined
   const seenTokens = new Set(nextToken ? [nextToken] : [])
   let truncated = false
+  let complete = false
+  let hasMore: boolean | null = null
+  let failureStatus: number | undefined
+  const warnings: ImportWarning[] = []
   let deferred = 0
   const threadRoots: ThreadRoot[] = []
 
@@ -280,21 +315,74 @@ export async function POST(req: NextRequest) {
     })
     if (nextToken) params.set('pagination_token', nextToken)
 
-    const res = await fetch(`https://api.x.com/2/users/${encodeURIComponent(userId.value)}/bookmarks?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-
-    if (!res.ok) {
-      const errText = await res.text()
-      console.error('X API bookmarks error:', res.status, errText)
-      if (total === 0) {
-        return NextResponse.json({ error: `X API error: ${res.status}` }, { status: 502 })
-      }
+    let res: Response
+    try {
+      res = await fetch(`https://api.x.com/2/users/${encodeURIComponent(userId.value)}/bookmarks?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    } catch {
+      warnings.push({ code: 'network_error', message: 'X APIへの接続に失敗しました。' })
+      hasMore = nextToken ? true : null
+      failureStatus = 502
       break
     }
 
-    const data = (await res.json()) as XBookmarksResponse
-    if (!data.data?.length) break
+    if (!res.ok) {
+      let errorType = ''
+      try {
+        const errorBody: unknown = await res.json()
+        if (isRecord(errorBody) && typeof errorBody.type === 'string') errorType = errorBody.type
+      } catch { /* use the upstream status when the body is not JSON */ }
+      const retryAfterHeader = res.headers.get('retry-after')
+      const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
+        ? Number(retryAfterHeader)
+        : undefined
+      const code: ImportWarning['code'] = res.status === 429
+        ? 'rate_limited'
+        : res.status === 401
+        ? 'reauth_required'
+        : res.status === 403 && errorType.endsWith('/spend-cap-reached')
+        ? 'quota_exceeded'
+        : 'upstream_error'
+      const message = code === 'rate_limited'
+        ? 'X APIのレート制限に達しました。'
+        : code === 'reauth_required'
+        ? 'X OAuthの再認証が必要です。'
+        : code === 'quota_exceeded'
+        ? 'X APIの利用上限に達しました。'
+        : 'X APIが取り込み要求を拒否しました。'
+      warnings.push({
+        code,
+        message,
+        upstreamStatus: res.status,
+        ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+      })
+      hasMore = nextToken ? true : null
+      failureStatus = res.status === 401 || res.status === 403 || res.status === 429 ? res.status : 502
+      break
+    }
+
+    let data: XBookmarksResponse | null
+    try {
+      data = parseXBookmarksResponse(await res.json())
+    } catch {
+      data = null
+    }
+    if (!data) {
+      warnings.push({ code: 'invalid_response', message: 'X APIから不正な応答が返りました。' })
+      hasMore = nextToken ? true : null
+      failureStatus = 502
+      break
+    }
+
+    const tweets = data.data ?? []
+    const pageToken = data.meta?.next_token
+    if (!tweets.length && !pageToken) {
+      complete = true
+      hasMore = false
+      nextToken = undefined
+      break
+    }
 
     const usersMap = new Map<string, XUser>()
     for (const u of data.includes?.users ?? []) usersMap.set(u.id, u)
@@ -302,7 +390,8 @@ export async function POST(req: NextRequest) {
     const mediaMap = new Map<string, XMedia>()
     for (const m of data.includes?.media ?? []) mediaMap.set(m.media_key, m)
 
-    for (const tweet of data.data) {
+    try {
+    for (const tweet of tweets) {
       total++
       const author = tweet.author_id ? usersMap.get(tweet.author_id) : undefined
       const threadRoot = { tweet, authorHandle: author?.username }
@@ -416,17 +505,47 @@ export async function POST(req: NextRequest) {
       archiveIds.push(created.id)
       threadRoots.push({ bookmarkId: created.id, ...threadRoot })
     }
+    } catch {
+      warnings.push({ code: 'persistence_error', message: 'Bookmarkの保存中に失敗しました。失敗したページから再試行してください。' })
+      hasMore = nextToken ? true : null
+      failureStatus = 502
+      break
+    }
 
-    const pageToken = data.meta?.next_token
-    if (!pageToken || seenTokens.has(pageToken)) { nextToken = undefined; break }
+    if (pageToken && seenTokens.has(pageToken)) {
+      warnings.push({ code: 'pagination_loop', message: 'X APIのページtokenが循環したため、取り込みを停止しました。' })
+      hasMore = null
+      nextToken = undefined
+      break
+    }
+    if (!pageToken) {
+      complete = true
+      hasMore = false
+      nextToken = undefined
+      break
+    }
     nextToken = pageToken
+    hasMore = true
     if (page === maxPages - 1) { truncated = true; break }
     seenTokens.add(nextToken)
   }
 
   const threads = body.includeThreads === true ? await hydrateOAuthThreads(threadRoots, token) : { imported: 0, partial: 0 }
   await enqueueIncompleteArchives(archiveIds)
-  return NextResponse.json({ imported, skipped, total, ...(threads.imported ? { threadsImported: threads.imported } : {}), ...(threads.partial ? { threadsPartial: threads.partial } : {}), ...(deferred ? { deferred } : {}), ...(truncated ? { truncated: true, nextToken } : {}) })
+  const responseStatus = failureStatus && imported + skipped === 0 ? failureStatus : 200
+  return NextResponse.json({
+    imported,
+    skipped,
+    total,
+    complete,
+    hasMore,
+    ...(nextToken ? { nextToken } : {}),
+    ...(warnings.length ? { warnings } : {}),
+    ...(threads.imported ? { threadsImported: threads.imported } : {}),
+    ...(threads.partial ? { threadsPartial: threads.partial } : {}),
+    ...(deferred ? { deferred } : {}),
+    ...(truncated ? { truncated: true } : {}),
+  }, { status: responseStatus })
 }
 
 async function repairArticles(): Promise<NextResponse> {

@@ -87,6 +87,18 @@ describe('X OAuth bookmark fetch', () => {
     expect(response.status).toBe(400)
   })
 
+  it('不正なJSON bodyを400で拒否し、X APIを呼ばない', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: '{invalid',
+    }) as never)
+
+    expect(response.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('X Articleの本文を要求してタイトルと本文を保存する', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -281,6 +293,178 @@ describe('X OAuth bookmark fetch', () => {
     const second = await POST(new Request('http://localhost/api/import/x-oauth/fetch', { method: 'POST', body: JSON.stringify({ nextToken: 'token-10' }) }) as never)
     await expect(second.json()).resolves.toMatchObject({ imported: 1, total: 1 })
     expect(new URL(fetchMock.mock.calls[10][0]).searchParams.get('pagination_token')).toBe('token-10')
+  })
+
+  it('途中の429を部分成功として返し、失敗したページからの再開情報を含める', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '1', text: 'saved' }], meta: { next_token: 'page-2' } }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({ 'Retry-After': '60' }),
+        text: async () => 'rate limited',
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ maxPages: 2, includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      imported: 1,
+      total: 1,
+      complete: false,
+      hasMore: true,
+      nextToken: 'page-2',
+      warnings: [expect.objectContaining({ code: 'rate_limited', upstreamStatus: 429, retryAfterSeconds: 60 })],
+    })
+    expect(mocks.enqueue).toHaveBeenCalledWith(['bookmark-1'])
+  })
+
+  it('最初の429は機械判定可能なエラーとして返す', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers({ 'Retry-After': '60' }),
+      json: async () => ({ title: 'Too Many Requests' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ maxPages: 1, includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(429)
+    await expect(response.json()).resolves.toMatchObject({
+      imported: 0,
+      total: 0,
+      complete: false,
+      hasMore: null,
+      warnings: [expect.objectContaining({ code: 'rate_limited', upstreamStatus: 429, retryAfterSeconds: 60 })],
+    })
+  })
+
+  it('空のページでもnext_tokenがあれば次のページを取得する', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [], meta: { next_token: 'page-2', result_count: 0 } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '2', text: 'second page' }], meta: { result_count: 1 } }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ maxPages: 2, includeThreads: false }),
+    }) as never)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(new URL(fetchMock.mock.calls[1][0]).searchParams.get('pagination_token')).toBe('page-2')
+    await expect(response.json()).resolves.toMatchObject({ imported: 1, complete: true, hasMore: false })
+  })
+
+  it('next_tokenのない空応答を正常な完了として返す', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [], meta: { result_count: 0 } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ includeThreads: false }),
+    }) as never)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expect(response.json()).resolves.toMatchObject({ imported: 0, total: 0, complete: true, hasMore: false })
+  })
+
+  it('循環tokenを検出して停止しても現在ページのbookmarkを保存する', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '1', text: 'first page' }], meta: { next_token: 'token-2' } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '2', text: 'second page' }], meta: { next_token: 'token-2' } }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ maxPages: 4, includeThreads: false }),
+    }) as never)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expect(response.json()).resolves.toMatchObject({
+      imported: 2,
+      complete: false,
+      hasMore: null,
+      warnings: [expect.objectContaining({ code: 'pagination_loop' })],
+    })
+  })
+
+  it('2ページ目の通信例外は保存済み件数と失敗ページのtokenを返す', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '1', text: 'saved' }], meta: { next_token: 'page-2' } }),
+      })
+      .mockRejectedValueOnce(new Error('network unavailable'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ maxPages: 2, includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      imported: 1,
+      total: 1,
+      complete: false,
+      hasMore: true,
+      nextToken: 'page-2',
+      warnings: [expect.objectContaining({ code: 'network_error' })],
+    })
+  })
+
+  it('不正なX応答は正常完了にせず安全な警告を返す', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ text: 'missing id' }] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toMatchObject({
+      total: 0,
+      complete: false,
+      warnings: [expect.objectContaining({ code: 'invalid_response' })],
+    })
+  })
+
+  it.each([
+    { label: 'spend-capを明示', body: { type: 'https://api.x.com/2/problems/spend-cap-reached' }, code: 'quota_exceeded' },
+    { label: 'spend-capを明示しない', body: { title: 'Forbidden' }, code: 'upstream_error' },
+  ])('403応答は$label場合だけquotaとして分類する', async ({ body, code }) => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 403, headers: new Headers(), json: async () => body })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toMatchObject({
+      complete: false,
+      warnings: [expect.objectContaining({ code })],
+    })
   })
 
   it('明示repairだけがlink-only X Articleを公式tweet APIで本文へ補完する', async () => {
