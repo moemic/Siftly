@@ -45,7 +45,7 @@ export async function codexPrompt(
   // Codex can inherit the desktop session's feature config, which may be
   // incompatible with the installed CLI version. Auth is still read from
   // CODEX_HOME when user config is ignored.
-  const args = ['exec', '--ignore-user-config', '--output-last-message', outFile]
+  const args = ['exec', '--ignore-user-config', '--skip-git-repo-check', '--sandbox', 'read-only', '--ephemeral', '--output-last-message', outFile]
   if (model) args.push('--model', model)
   if (reasoningEffort) args.push('--config', `model_reasoning_effort="${reasoningEffort}"`)
   args.push(prompt)

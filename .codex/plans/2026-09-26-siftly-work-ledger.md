@@ -1,6 +1,6 @@
 # Siftly 自動取り込み・週次AI分類 作業台帳
 
-最終確認: 2026-09-26
+最終確認: 2026-09-27
 この文書を、Siftlyの自動化作業で唯一の現行台帳として扱う。過去の設計案と食い違う場合は、この台帳の「現在の方針」と最新の作業記録を優先する。Lunaは一度に未完了IDを一つだけ実装し、完了条件を証拠付きで更新してから次へ進む。
 
 初回は「現在の状態」と次のIDを読み、担当チケットに進む。Astraは計画・優先順位・台帳更新を担い、Lunaは指定された一つのコード作業を実装する。仕様選択が必要なら推測で埋めず、この台帳に論点と根拠を残してユーザーに尋ねる。
@@ -43,15 +43,25 @@ flowchart LR
 
 | 項目 | 状態 | 根拠 |
 |---|---|---|
-| Siftly本体の起動 | **完了（ローカル設定）** | 以前のplistは配列で、LaunchAgentに必要な`Label`等を持たず、`plutil -lint`も失敗していた。2026-09-26に正しい辞書形式へ直し、`launchctl bootstrap gui/501 ...`で登録。`launchctl print gui/501/com.moemic.siftly`は`state = running`、`runs = 1`。`http://localhost:15000/settings`はHTTP 200で、設定画面にGPT-6 LunaとCodex CLIのサインイン状態を表示した。設定ファイルはこのMacの`~/Library/LaunchAgents/com.moemic.siftly.plist`にあり、Git管理外。 |
-| X定期ジョブ | **設定完了・次回実行待ち** | LaunchAgentを月曜・木曜10:00 JSTの`StartCalendarInterval`へ変更し、`launchctl print`にWeekday 1/4、Hour 10、Minute 0を確認。`runs = 0`。 |
-| 週次分類ジョブ | **設定完了・次回実行待ち** | 最新のX取得後に動くよう金曜10:00 JSTの`StartCalendarInterval`へ変更。Weekday 5、Hour 10、Minute 0を確認。`runs = 0`。 |
-| 自動ジョブの通知 | **分類0件通知をWebhookが受理** | 2026-09-26、`scripts/siftly-scheduled-task.sh categorize`が0/0完了しWebhook POST成功で終了。インポート結果通知はX quota回復後に確認する。 |
-| X API | **外部待ち** | 過去ログにX APIの403 `spend-cap-reached`がある。現在の利用枠は未確認。枠が回復するまで実取得を止める。 |
-| AI分類 | **設定・CLI smoke完了、実データ分類は未確認** | `llm`が既定値。設定はOpenAI CLI OAuth / `gpt-5.6-luna`。Codex CLIへ`xhigh`を指定した合成短文smoke成功。分類対象は0件のため、本番ブックマークを使う分類は未実行。 |
-| Git | **前回まで完了** | HEAD `127a97f8c590123b1bbc181a255fda52f69d822f`（`Improve categorization retries and engine configuration`、2026-09-24）。今回のLaunchAgent修正はMac上のユーザー設定で、リポジトリのコミットには含まれない。 |
+| Siftly本体の起動 | **完了（起動・自動復帰確認）** | 専用`scripts/siftly-server.sh`を起動先にした。`SIGTERM`後、KeepAliveでPIDが14729から16713へ変わり、`runs = 2`、`/settings` HTTP 200を確認。ユーザーLaunchAgent plistはGit管理外。 |
+| X定期ジョブ | **設定済み・利用枠待ちで停止中** | 月曜・木曜10:00 JSTのplistを保持。2026-09-27に`launchctl disable`と`bootout`を実施し、`print-disabled`で`=> disabled`、未登録を確認。回復確認後に再登録する。 |
+| 週次分類ジョブ | **設定・実起動確認完了** | 金曜10:00 JST。2026-09-27にLaunchAgentを`kickstart`し、対象0件で`runs = 1`、`last exit code = 0`を確認。自然な金曜の時刻到来は未確認。 |
+| 自動ジョブの通知 | **実Webhook受理確認済み** | 実ブックマーク1/1件の分類結果通知はHTTP 204。定期分類ジョブも0件正常終了。Webhook受理までの確認であり、Discord端末のプッシュ表示は未確認。X取得結果通知はQA-03待ち。 |
+| X API | **外部待ち** | 過去に403 `spend-cap-reached`。開発者ポータルはログイン要求となり、現在の利用枠を確認できなかった。回復をユーザーへ確認中。X APIは呼んでいない。 |
+| AI分類 | **実ブックマーク1件の分類・保存確認完了** | OpenAI CLI OAuth / `gpt-5.6-luna`、要求設定`xhigh`、既定`llm`。通常分類APIの選択ID経路で1件を分類・保存。既存カテゴリ・本文等を維持。CLIはread-only・一時セッションを明示する。 |
+| Git | **ローカルで実装継続** | 再開時HEADは`a556b21`（GPT-5.6 Luna対応）、originより9コミット先。今回のソース変更・検証記録もローカルに記録する。追加pushはしていない。ユーザーLaunchAgent設定はGit管理外。 |
 
 ## Phase 0 — 実装前に再利用する契約
+
+### 2026-09-27の再開順序
+
+ユーザーがSolへの切り替えを明示して再開。Solが単独で次の順に検証・記録する。承認済みの自動化と台帳の範囲内で進める。
+
+1. SCH-01: 本体の汎用node直接起動をSiftly専用ラッパーへ変更。分類・archive処理が停止中と確認して対象LaunchAgentだけ再読込し、HTTP 200と終了後のKeepAlive復帰を検証する。
+2. QA-02: CLIを明示的なread-only・一時セッションで起動するよう既存ヘルパーを修正。6,017件すべて分類済みのため、手動修正・メディア・未完了タグがない既存1件を通常分類の選択ID経路で検証する。既存カテゴリを削除せず、本文やIDを検証ログへ出さない。
+3. QA-03: ログイン済みの開発者画面で利用枠の回復を確認できるか調べる。回復が不明な間はX APIを呼ばず、実取得ゲートを未完了として残す。
+
+主なリスクは本体再起動中の短い停止と、1件の分類結果更新。対象ジョブの停止状態、保存数、秘密値を含まない通知、回帰テストを証拠にする。
 
 未完了チケットへ着手するLunaは、対象ファイルとそのテストを読み直す。下記は2026-09-26のコード確認で得た入口であり、実装前に現在のHEADと照合する。
 
@@ -63,7 +73,7 @@ flowchart LR
 - **通常分類の対象**: `POST /api/categorize`に`force:false`を渡す。現在は`enrichedAt`が未設定かつゴミ箱でないBookmarkを対象にする（同ファイル:258–265）。手動フィードバックを保護しながら保存する。
 - **分類エンジン**: `getCategoryEngine()`（`lib/categorizer.ts:161–171`）。環境変数未設定時の既定値は`llm`。
 - **分類結果保存**: `writeCategoryResults(results, options?)`（同ファイル:556–629）は保存されたBookmark IDの配列を返す。分類数はAI応答数ではなく、この保存結果を基準にする。
-- **Codex CLI**: `codexPrompt(prompt, { model, reasoningEffort, timeoutMs })`（`lib/codex-cli.ts:36–56`）。コマンドは`CODEX_CLI_PATH`があればそれを使う。GPT-6 Lunaと`xhigh`を使う既存テスト例は`__tests__/categorizer-partial-response.test.ts:70`。
+- **Codex CLI**: `codexPrompt(prompt, { model, reasoningEffort, timeoutMs })`（`lib/codex-cli.ts`）。`CODEX_CLI_PATH`を優先する。`--ignore-user-config --skip-git-repo-check --sandbox read-only --ephemeral`を明示し、アプリ側のモデル・推論設定を渡す。GPT-5.6 Lunaと`xhigh`の要求は`__tests__/categorizer-partial-response.test.ts`、CLI権限は`__tests__/codex-cli.test.ts`で検証する。
 - **既存定期実行**: `scripts/siftly-scheduled-task.sh`がHTTP経由で取り込み・分類APIを呼び、分類は最大6時間ポーリングする。Webhook送信関数も同ファイル内にある。
 
 ### 避けること
@@ -74,7 +84,7 @@ flowchart LR
 - 既存の正常分類結果を、同じバッチの一部欠落だけを理由に破棄しない。欠落分の小分け再試行と部分結果保存は既に入っている。
 - 通知失敗を理由にX取得やAI分類そのものをやり直さない。処理結果と通知の成否を分ける。
 - `.env`、Webhook、OAuthトークン、ブックマーク本文をログやDiscordへ出さない。
-- `start.sh`をLaunchAgentの起動先にしない。同スクリプトは依存導入、DBセットアップ、トンネル・ブラウザー操作も行う。LaunchAgentはNext.jsを直接起動する。
+- `start.sh`をLaunchAgentの起動先にしない。同スクリプトは依存導入、DBセットアップ、トンネル・ブラウザー操作も行う。専用`scripts/siftly-server.sh`からNext.jsだけを起動する。
 
 ## Lunaが進める実装台帳
 
@@ -144,7 +154,7 @@ flowchart LR
 
 ### NOT-01 — Discordへ部分成功・失敗を正しく伝える
 
-**状態: 実装・fake HTTP検証済み、実Webhook未受信。** Discordには新規/既存/処理件数、完了/部分/失敗、定型化した警告コードだけを送る。X cursor、upstream detail、LLM error detailのレスポンス全文は送らない。Webhook失敗は検知して非0終了し、元の取得・分類要求を再実行しない。macOS bash 3.2互換で未設定認証配列を避ける。
+**状態: 完了（fake HTTP・分類結果の実Webhook受理）。** Discordには新規/既存/処理件数、完了/部分/失敗、定型化した警告コードだけを送る。X cursor、upstream detail、LLM error detailのレスポンス全文は送らない。Webhook失敗は検知して非0終了し、元の取得・分類要求を再実行しない。macOS bash 3.2互換で未設定認証配列を避ける。2026-09-27、実分類1/1件の要約を実WebhookがHTTP 204で受理した。X結果の実配信はQA-03待ち。
 
 **変更範囲:** `scripts/siftly-scheduled-task.sh`と必要なshellテスト。IMP-01/02の応答契約に合わせて更新する。Webhook URL、token、生の投稿本文を通知に含めない。
 
@@ -156,7 +166,7 @@ flowchart LR
 
 ### SCH-01 — 3〜4日ごとの取得と週次分類をスリープ後も実行する
 
-**状態: ローカル設定完了・実行未確認。** X取り込みは月曜・木曜10:00 JST、週次分類は金曜10:00 JST。macOSの`launchd.plist` man pageで、`StartCalendarInterval`は睡眠中の実行を復帰後へまとめることを確認。今回の設定再読込後も両ジョブは`runs = 0`で、動作中ジョブを止めずに適用した。
+**状態: 本体復帰・分類ジョブ起動確認済み、X再開は外部待ち。** 月曜・木曜10:00 JSTの取得設定を保持し、回復確認までXジョブだけ無効・未登録にした。金曜10:00 JSTの分類ジョブは実際に起動して正常終了。`StartCalendarInterval`のスリープ後の繰り越しはman pageで確認したが、この検証ではMacを実際にスリープさせていない。
 
 **変更範囲:** 2つのユーザーLaunchAgent plistと、必要な場合だけ既存shell。汎用scheduler/daemonは追加しない。
 
@@ -165,6 +175,8 @@ flowchart LR
 **受け入れ条件:** plistが辞書形式で`Label`、絶対パスの`ProgramArguments`、`WorkingDirectory`、ログ先を持つ。`plutil -lint`と`launchctl print`で2つの間隔/曜日、タイムゾーン前提、実行状態を確認する。設定反映のためbootstrapし直す前に、該当ジョブが処理中でないことを確認する。quota中にimportをkickstartしない。Siftly本体は今回修復済みの`com.moemic.siftly`を呼び出し先にする。
 
 **実装記録:** 2026-09-26、Codex。`~/Library/LaunchAgents/com.moemic.siftly.live-import.plist`と`com.moemic.siftly.ai-categorize.plist`をローカル変更（Git外）。各`plutil -lint` — OK。`launchctl bootout/bootstrap gui/501`成功。`launchctl print`でcalendar triggers（Mon/Thu 10:00、Fri 10:00）、active count 0、`runs = 0`を確認。X・分類ジョブをkickstartせず。man pageによりsleep復帰後のcalendar trigger coalescingを確認。コミット対象外（ローカルのみ）。
+
+**追加検証:** 2026-09-27、Sol。本体の起動先を新規`scripts/siftly-server.sh`へ変更。分類idle・archive処理0件を確認して本体だけ再登録し、`SIGTERM`後のKeepAlive復帰（PID14729→16713、runs2、HTTP 200）を確認。3つのplist構文検査と`sh -n scripts/siftly-server.sh`は成功。分類LaunchAgentを1回起動し、runs1・終了コード0。Xはkickstartせず、無効化と登録解除のみ実施。Git外のplistも新規Macへ自動移行するものではない。
 
 ### QA-01 — ローカル環境だけで3種類の結果経路を確認する
 
@@ -180,21 +192,39 @@ flowchart LR
 
 **実装記録:** 2026-09-26、Codex。分類timeoutをテスト時だけ即時化できる`SIFTLY_CATEGORIZE_TIMEOUT_SECONDS`（通常の既定は6時間）を用いてtimeout通知を検証。`npx vitest run` — 30 files / 255 tests passed。`npx tsc --noEmit` — pass。対象ESLintはエラーなし（既存warning 2件）、`bash -n scripts/siftly-scheduled-task.sh`、`git diff --check` — pass。fake HTTP外への接続なし。実装コミット: `8cf0517`。
 
+**最新回帰検証:** 2026-09-27、`npx vitest run` — 30 files / 256 tests passed。`npx tsc --noEmit`、対象ESLint、shell・plist構文検査も成功。CLIのread-only・ephemeral起動を検証するテストを追加。QA-01のテストは外部通信・実Bookmark書き込みなし。実データ検証はQA-02に分けて記録した。
+
+同日の現HEADに対する追加差分を単独レビューした。運用ルールとの不整合は追加差分に見つからず、仕様上の未完了はX実取得と取得ジョブの再開（QA-03/SCH-01）。専用ラッパーはこのMacの絶対パスとLaunchAgentのPATHを前提とする。自動インストーラー・別scheduler・追加依存は作っていない。日本語文書はquick検査を行い、台帳の定型見出しと用語反復はID別に探しやすくするため維持した。再現用ガイドも指定のObsidianフォルダーへ保存済み。
+
 ### QA-02 — OAuth分類とDiscordの実運用を一度だけ確認する
 
-**状態: 一部完了。** GPT-6 LunaはCodex CLI 0.153.0がChatGPT OAuth利用時に拒否。ユーザー希望のGPT-5.6 Lunaを設定画面/APIで選択可能にし、ローカル設定をprovider=`openai`、auth=`cli`、model=`gpt-5.6-luna`へ変更。`xhigh`付きの合成短文Codex CLI smoke成功。通常のスケジュール分類を実行し、対象0件・保存0件で正常終了。結果Discord WebhookへのPOSTも成功。分類対象Bookmarkが0件なので、実ブックマークを含む分類成功は未確認。CLI失敗時のprompt漏えい防止は`45341ec`で修正済み。
+**状態: 完了（実ブックマーク1件・実Webhook受理）。** GPT-6 Lunaは現在のCLI + ChatGPT OAuthで拒否されたため、ユーザー希望のGPT-5.6 Lunaを選択。provider=`openai`、auth=`cli`、model=`gpt-5.6-luna`を設定APIで確認し、分類コードが`xhigh`をCLIへ渡すことをテストで確認。通常分類APIで既存1件を処理・保存し、Discord Webhookが結果をHTTP 204で受理した。実行中のCLI argvからモデルを観測したという意味ではない。CLI失敗時のprompt漏えい防止は`45341ec`で修正済み。
 
 **条件と手順:** QA-01完了後に実施する。最初に`/api/settings/cli-status`でCLIが利用可能と分かる範囲を確認する。小さい分類対象で通常分類を1回実行し、モデル・推論強度、保存数、run状態をログ/応答から確認する。次にDiscordへ結果が届いたことを確認する。秘密値・Bookmark本文をログに転記しない。X APIはこのQAで呼ばない。
 
 **受け入れ条件:** Codex CLIの利用可能性、GPT-5.6 Lunaと`xhigh`、実ブックマーク分類状態、Discord Webhook受理を個別に記録。どれか一つでも未確認なら全体を「完了」にしない。
 
-**現在の確認記録:** 2026-09-26。設定APIでprovider=`openai`、auth=`cli`、model=`gpt-5.6-luna`の保存を確認。codex CLI経由の合成短文smokeは`xhigh`で成功。DBの通常分類対象は0件。定期分類shellを実行し0/0完了、Discord Webhook POST成功（Bookmark変更・LLM分類呼び出しなし）。従って実ブックマークを使ったモデル分類だけ未確認で、対象ができるまで安全に保留する。設定UI/APIへのGPT-5.6 Luna追加は本作業中の変更。CLI失敗時のprompt漏えいを防ぐ修正は`45341ec`。
+**最新の確認記録:** 2026-09-27、Sol。`/settings`・`/api/settings`はHTTP 200、`/api/settings/cli-status`はCLI利用可能・認証情報あり。非削除6,017件、通常の未処理・未分類0件、archive処理0件。手動カテゴリ修正がなく、タグが揃い、メディアのない既存1件を選び、`POST /api/categorize`へ`{ bookmarkIds: [対象ID], force: false, language: "ja" }`を送った。categoryOnlyや全件forceは使っていない。runId=`muisib9e-1`、終了idle、done1/total1、categorized1、vision0、enriched0。既存カテゴリがすべて残り、本文・タグ・entitiesも変わっていないことをDBで確認した。カテゴリの保存は実データへの書き込みであり、単なる合成smokeではない。本文・ID・秘密値は検証ログへ出していない。
+
+分類後、安全な件数と設定名だけの要約を`.env`の実Webhookへ1回送信し、HTTP 204を確認。その後、実際の分類LaunchAgentを1回kickstartし、通常の対象0件で終了コード0を確認した。新規未処理投稿の大量分類、自然な金曜の実行、Discord端末でのプッシュ表示はこの検証の対象外。共有CLIヘルパーはread-only・ephemeralを明示し、既存の検索・カテゴリ提案・画像分析の呼び出し元も確認した。
 
 ### QA-03 — Xの実取得と再開をquota回復後に確認する
 
 **状態: 外部待ち。** 過去に403 `spend-cap-reached`を記録。最新の残枠・回復日時は不明で、今はX APIを呼ばない。
 
 **受け入れ条件:** 利用枠回復後、最新のX status/usageを確認してから、通常モードで小さいページ上限の取得を1回行う。新規・重複・削除済み維持・途中失敗の通知を確認する。force取得や全件やり直しをしない。Xへの通信が許されないままなら、ローカルモック検証までを完了、実運用は外部待ちと記録する。
+
+**2026-09-27の記録:** 開発者ポータルをブラウザーで開いたが、Xログインを求められ、利用枠を確認できなかった。認証情報の入力・X API呼び出しはしていない。ユーザーへ回復確認を質問済み。回復前の自動取得も防ぐため、`com.moemic.siftly.live-import`だけ`disable`・`bootout`し、`print-disabled gui/501`の`=> disabled`と未登録を確認。mainと週次分類は止めていない。
+
+**次の作業（回復確認後だけ）:** まず実取得APIを`scheduled:true, maxPages:1`で1回検証し、件数・complete/hasMore/warnings・保存済みカーソルと安全なDiscord通知を確認する。想定外の403/429なら再取得しない。新規/削除済み/途中失敗など自然に発生しないケースはモック結果と実観測を区別し、失敗を意図的に起こすために余分なX API要求をしない。確認が成功したら下記で同じ月・木10時設定を復帰し、`launchctl print`で登録・calendar triggerを確認する。新たなジョブ基盤は不要。
+
+```sh
+launchctl enable gui/501/com.moemic.siftly.live-import
+launchctl bootstrap gui/501 /Users/takahiro/Library/LaunchAgents/com.moemic.siftly.live-import.plist
+launchctl print gui/501/com.moemic.siftly.live-import
+```
+
+登録に失敗したらXジョブを無効に戻し、理由を記録する。利用枠未確認のまま上記を実行しない。
 
 ## 先送りする項目
 
