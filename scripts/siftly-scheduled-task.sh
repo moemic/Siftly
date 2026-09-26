@@ -56,7 +56,7 @@ notify() {
 
 json_summary() {
   local json="$1"
-  [[ -z "$NODE_BIN" ]] && { printf 'unknown\t\t?\t?\t0\t\t'; return 0; }
+  [[ -z "$NODE_BIN" ]] && { printf 'unknown\t\t?\t?\t0\ttrue\tfalse'; return 0; }
   "$NODE_BIN" -e '
     try {
       const value = JSON.parse(process.argv[1]);
@@ -68,9 +68,10 @@ json_summary() {
         value.total ?? "?",
         counts.categorized ?? 0,
         Boolean(value.lastError || value.error),
+        value.error === "Stopped by user",
       ].join("\t").replace(/[\r\n]/g, " "));
     } catch {
-      console.log("invalid\t\t?\t?\t0\ttrue");
+      console.log("invalid\t\t?\t?\t0\ttrue\tfalse");
     }
   ' "$json"
 }
@@ -140,7 +141,7 @@ run_import() {
 }
 
 run_categorize() {
-  local start_response start_run_id status_response summary pipeline_status run_id done total categorized has_error
+  local start_response start_run_id status_response summary pipeline_status run_id done total categorized has_error stopped timeout_seconds
   log 'starting AI categorization'
   if ! start_response=$(request POST /api/categorize '{"force":false,"language":"ja"}'); then
     log 'categorization start request failed'
@@ -156,7 +157,9 @@ run_categorize() {
     return 1
   fi
 
-  local deadline=$((SECONDS + 21600))
+  timeout_seconds="${SIFTLY_CATEGORIZE_TIMEOUT_SECONDS:-21600}"
+  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || timeout_seconds=21600
+  local deadline=$((SECONDS + timeout_seconds))
   while (( SECONDS < deadline )); do
     if ! status_response=$(request GET /api/categorize); then
       log 'categorization status request failed'
@@ -165,7 +168,7 @@ run_categorize() {
     fi
 
     summary=$(json_summary "$status_response")
-    IFS=$'\t' read -r pipeline_status run_id done total categorized has_error <<< "$summary"
+    IFS=$'\t' read -r pipeline_status run_id done total categorized has_error stopped <<< "$summary"
     if [[ -z "$run_id" ]]; then
       log 'categorization status did not include a run id'
       notify 'Siftly AI分類の実行IDを確認できませんでした。'
@@ -177,6 +180,11 @@ run_categorize() {
       return 1
     fi
     if [[ "$pipeline_status" == 'idle' ]]; then
+      if [[ "$stopped" == 'true' ]]; then
+        log "categorization stopped: ${done}/${total}, categorized: ${categorized}"
+        notify $'Siftly AI分類は停止されました\n'"処理: ${done}/${total}"$'\n'"分類保存: ${categorized}件"
+        return 1
+      fi
       if [[ "$has_error" == 'true' ]]; then
         log 'categorization finished with an error or partial result'
         notify $'Siftly AI分類は一部失敗またはエラーで終了しました\n'"処理: ${done}/${total}"$'\n'"分類保存: ${categorized}件"

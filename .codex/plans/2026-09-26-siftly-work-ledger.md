@@ -44,8 +44,8 @@ flowchart LR
 | 項目 | 状態 | 根拠 |
 |---|---|---|
 | Siftly本体の起動 | **完了（ローカル設定）** | 以前のplistは配列で、LaunchAgentに必要な`Label`等を持たず、`plutil -lint`も失敗していた。2026-09-26に正しい辞書形式へ直し、`launchctl bootstrap gui/501 ...`で登録。`launchctl print gui/501/com.moemic.siftly`は`state = running`、`runs = 1`。`http://localhost:15000/settings`はHTTP 200で、設定画面にGPT-6 LunaとCodex CLIのサインイン状態を表示した。設定ファイルはこのMacの`~/Library/LaunchAgents/com.moemic.siftly.plist`にあり、Git管理外。 |
-| X定期ジョブ | **実装済み・未運用確認** | `com.moemic.siftly.live-import`は3日間隔で登録済み。今回の確認では`runs = 0`。 |
-| 週次分類ジョブ | **実装済み・未運用確認** | `com.moemic.siftly.ai-categorize`は7日間隔で登録済み。今回の確認では`runs = 0`。 |
+| X定期ジョブ | **設定完了・次回実行待ち** | LaunchAgentを月曜・木曜10:00 JSTの`StartCalendarInterval`へ変更し、`launchctl print`にWeekday 1/4、Hour 10、Minute 0を確認。`runs = 0`。 |
+| 週次分類ジョブ | **設定完了・次回実行待ち** | 最新のX取得後に動くよう金曜10:00 JSTの`StartCalendarInterval`へ変更。Weekday 5、Hour 10、Minute 0を確認。`runs = 0`。 |
 | 自動ジョブの通知 | **送信経路あり・部分結果の判定要修正・未受信確認** | `.env`にWebhook設定があり、shellに送信処理がある。実行結果のDiscord受信は未確認。 |
 | X API | **外部待ち** | 過去ログにX APIの403 `spend-cap-reached`がある。現在の利用枠は未確認。枠が回復するまで実取得を止める。 |
 | AI分類 | **コード完了・実運用未確認** | `llm`が既定値。設定画面はOpenAI CLI/Codex CLIとGPT-6 Lunaを表示。Luna呼び出しに`reasoningEffort: 'xhigh'`を渡すコードとテストがある。最後に記録された全28テストファイル・220テスト、TypeScript、対象ESLintの合格は2026-09-23時点。 |
@@ -152,23 +152,23 @@ flowchart LR
 
 **受け入れ条件:** shell構文検査とfake HTTP serverによる成功・部分成功・HTTP失敗・Webhook失敗の確認。Webhook失敗が検知され、X/分類APIが二重実行されない。通知本文に秘密値がない。実Webhook受信確認はQA-02で別に記録する。
 
-**実装記録:** 2026-09-26、Codex。`scripts/siftly-scheduled-task.sh`と`__tests__/siftly-scheduled-task.test.ts`を追加/変更。fake HTTPでimport完了・部分quota・HTTP失敗、分類完了・部分・runId変更、両処理のWebhook障害を検証。通知にcursor/raw detailが含まれず、処理APIは各1回だけ。`npx vitest run __tests__/siftly-scheduled-task.test.ts` — 5 tests passed。`npx tsc --noEmit`、`bash -n scripts/siftly-scheduled-task.sh` — pass。実Discord未送信。コミットは台帳へ追記する。
+**実装記録:** 2026-09-26、Codex。`scripts/siftly-scheduled-task.sh`と`__tests__/siftly-scheduled-task.test.ts`を追加/変更。fake HTTPでimport完了・部分quota・HTTP失敗、分類0件/全件/部分/停止/timeout/runId変更、両処理のWebhook障害を検証。通知にcursor/raw detailが含まれず、処理APIは各1回だけ。最新`npx vitest run __tests__/siftly-scheduled-task.test.ts` — 7 tests passed。`npx tsc --noEmit`、`bash -n scripts/siftly-scheduled-task.sh` — pass。実Discord未送信。基盤実装コミット: `affc333`。QA-01追加コミットは下記に記録する。
 
 ### SCH-01 — 3〜4日ごとの取得と週次分類をスリープ後も実行する
 
-**状態: 要実装・運用未確認。** 現在のLaunchAgentは`StartInterval` 259200秒と604800秒（各plist）で登録済み。macOSの`launchd.plist` man pageでは、スリープ中または前回処理中に発火した`StartInterval`はその回が失われると説明されている。今回の`launchctl print`では両ジョブとも`runs = 0`。週次分類とimportが同時刻になることも避けたい。
+**状態: ローカル設定完了・実行未確認。** X取り込みは月曜・木曜10:00 JST、週次分類は金曜10:00 JST。macOSの`launchd.plist` man pageで、`StartCalendarInterval`は睡眠中の実行を復帰後へまとめることを確認。今回の設定再読込後も両ジョブは`runs = 0`で、動作中ジョブを止めずに適用した。
 
 **変更範囲:** 2つのユーザーLaunchAgent plistと、必要な場合だけ既存shell。汎用scheduler/daemonは追加しない。
 
-**実装案:** `StartCalendarInterval`でX取得を週2回（月曜・木曜、3日/4日の間隔）、分類を週1回（日曜）にする。時刻はJST 10:00を初期値としてよい（ユーザー指定は「いつでもよい」）。macOSがsleepを終えた後にcalendarイベントをまとめて実行する性質を使う。ジョブはユーザーがログイン中のLaunchAgentとして動かす。失敗中の連続起動や重複起動を避ける。
+**設定:** `StartCalendarInterval`でX取得を週2回（月曜・木曜、3日/4日の間隔）、分類を週1回（金曜）に設定。時刻はJST 10:00。木曜取得の翌日に分類するため、分類前に定期取得を行い、週末前に分類を終える。macOSがsleepを終えた後にcalendarイベントをまとめて実行する性質を使う。ジョブはユーザーがログイン中のLaunchAgentとして動かす。
 
 **受け入れ条件:** plistが辞書形式で`Label`、絶対パスの`ProgramArguments`、`WorkingDirectory`、ログ先を持つ。`plutil -lint`と`launchctl print`で2つの間隔/曜日、タイムゾーン前提、実行状態を確認する。設定反映のためbootstrapし直す前に、該当ジョブが処理中でないことを確認する。quota中にimportをkickstartしない。Siftly本体は今回修復済みの`com.moemic.siftly`を呼び出し先にする。
 
-**実装後の記録:** `未着手` → 対象plist・曜日/時刻・状態・検証結果・コミット（リポジトリ外なら「ローカルのみ」）を追記。
+**実装記録:** 2026-09-26、Codex。`~/Library/LaunchAgents/com.moemic.siftly.live-import.plist`と`com.moemic.siftly.ai-categorize.plist`をローカル変更（Git外）。各`plutil -lint` — OK。`launchctl bootout/bootstrap gui/501`成功。`launchctl print`でcalendar triggers（Mon/Thu 10:00、Fri 10:00）、active count 0、`runs = 0`を確認。X・分類ジョブをkickstartせず。man pageによりsleep復帰後のcalendar trigger coalescingを確認。コミット対象外（ローカルのみ）。
 
 ### QA-01 — ローカル環境だけで3種類の結果経路を確認する
 
-**状態: 要実施。** 本番のX/AI分類はまだ定期実行で確認していない。まず副作用をモックした小さな再現で実行スクリプトと結果判定を固める。
+**状態: 完了（fake HTTPのみ）。** 新規の`__tests__/siftly-scheduled-task.test.ts`は127.0.0.1のfake serverと一時Webhook URLだけを使う。実X/Discord/OpenAI接続やBookmark DB書き込みはしていない。
 
 **受け入れ条件:**
 
@@ -177,6 +177,8 @@ flowchart LR
 3. `runId`が変わった場合に別ジョブの完了と誤認しない。
 4. Webhook障害時にX取得や分類を再実行しない。
 5. fake server以外へ接続せず、DBの実ブックマークを変更しない。
+
+**実装記録:** 2026-09-26、Codex。分類timeoutをテスト時だけ即時化できる`SIFTLY_CATEGORIZE_TIMEOUT_SECONDS`（通常の既定は6時間）を用いてtimeout通知を検証。`npx vitest run` — 29 files / 253 tests passed。`npx tsc --noEmit` — pass。対象ESLint、`bash -n scripts/siftly-scheduled-task.sh`、`git diff --check` — pass。fake HTTP外への接続なし。コミットはこの記録を含む変更として追記する。
 
 ### QA-02 — OAuth分類とDiscordの実運用を一度だけ確認する
 

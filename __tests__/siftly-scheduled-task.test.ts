@@ -14,6 +14,7 @@ interface Scenario {
   webhookStatus?: number
   startBody?: unknown
   statusBodies?: unknown[]
+  timeoutSeconds?: number
 }
 
 async function runTask(scenario: Scenario) {
@@ -63,6 +64,7 @@ async function runTask(scenario: Scenario) {
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${address.port}/webhook`,
       SIFTLY_USERNAME: '',
       SIFTLY_PASSWORD: '',
+      ...(scenario.timeoutSeconds === undefined ? {} : { SIFTLY_CATEGORIZE_TIMEOUT_SECONDS: String(scenario.timeoutSeconds) }),
     },
   })
   let output = ''
@@ -154,6 +156,37 @@ describe('定期タスクのHTTP連携', () => {
     expect(notifications(partial.requests)[0]).toContain('分類保存: 0件')
     expect(notifications(partial.requests)[0]).not.toContain('PRIVATE_MODEL_RESPONSE')
     expect(partial.output).not.toContain('PRIVATE_MODEL_RESPONSE')
+  })
+
+  it('分類対象0件でも0/0の正常結果を通知する', async () => {
+    const result = await runTask({
+      mode: 'categorize',
+      startBody: { status: 'started', total: 0, runId: 'run-1' },
+      statusBodies: [{ status: 'idle', runId: 'run-1', done: 0, total: 0, stageCounts: { categorized: 0 } }],
+    })
+
+    expect(result.code).toBe(0)
+    expect(notifications(result.requests)[0]).toContain('処理: 0/0')
+    expect(notifications(result.requests)[0]).toContain('分類済み: 0')
+  })
+
+  it('停止状態と6時間timeoutを成功と混同しない', async () => {
+    const stopped = await runTask({
+      mode: 'categorize',
+      startBody: { status: 'started', total: 5, runId: 'run-1' },
+      statusBodies: [{
+        status: 'idle', runId: 'run-1', done: 2, total: 5, stageCounts: { categorized: 1 }, error: 'Stopped by user',
+      }],
+    })
+    expect(stopped.code).toBe(1)
+    expect(notifications(stopped.requests)[0]).toContain('停止されました')
+    expect(notifications(stopped.requests)[0]).toContain('処理: 2/5')
+
+    const timedOut = await runTask({ mode: 'categorize', timeoutSeconds: 0 })
+    expect(timedOut.code).toBe(1)
+    expect(timedOut.requests.filter((request) => request.path === '/api/categorize' && request.method === 'POST')).toHaveLength(1)
+    expect(timedOut.requests.filter((request) => request.path === '/api/categorize' && request.method === 'GET')).toHaveLength(0)
+    expect(notifications(timedOut.requests)[0]).toContain('6時間でタイムアウト')
   })
 
   it('分類通知のWebhook失敗でも分類開始は一度だけ', async () => {
