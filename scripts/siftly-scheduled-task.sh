@@ -89,7 +89,7 @@ json_run_id() {
 run_import() {
   local response
   log 'starting live import'
-  if response=$(request POST /api/import/x-oauth/fetch '{"maxPages":10,"includeThreads":true}' 2>&1); then
+  if response=$(request POST /api/import/x-oauth/fetch '{"maxPages":10,"includeThreads":true,"scheduled":true}' 2>&1); then
     log "import result: $response"
     notify $'Siftly Xライブインポート完了\n'"$response" || return 1
     return 0

@@ -281,6 +281,138 @@ describe('X OAuth bookmark fetch', () => {
     await expect(response.json()).resolves.toMatchObject({ deferred: 1, skipped: 1 })
   })
 
+  it('定期実行は保存済みtokenから再開し、完了時にtokenを消す', async () => {
+    mocks.db.setting.findUnique.mockImplementation(({ where }: { where: { key: string } }) => Promise.resolve(
+      where.key === 'x_oauth_scheduled_import_next_token' ? { value: 'saved-token' }
+        : where.key === 'x_oauth_access_token' ? { value: 'token' }
+          : where.key === 'x_oauth_user_id' ? { value: 'x-user-1' }
+            : null,
+    ))
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [], meta: { result_count: 0 } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, includeThreads: false }),
+    }) as never)
+
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get('pagination_token')).toBe('saved-token')
+    expect(mocks.db.setting.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { key: 'x_oauth_scheduled_import_next_token' },
+      update: { value: '' },
+    }))
+  })
+
+  it('ページごとに保存したtokenを次回の定期実行で使い、最終ページで消す', async () => {
+    let savedCursor = ''
+    mocks.db.setting.findUnique.mockImplementation(({ where }: { where: { key: string } }) => Promise.resolve(
+      where.key === 'x_oauth_scheduled_import_next_token' ? { value: savedCursor }
+        : where.key === 'x_oauth_access_token' ? { value: 'token' }
+          : where.key === 'x_oauth_user_id' ? { value: 'x-user-1' }
+            : null,
+    ))
+    mocks.db.setting.upsert.mockImplementation(({ update }: { update: { value: string } }) => {
+      savedCursor = update.value
+      return Promise.resolve({ key: 'x_oauth_scheduled_import_next_token', value: savedCursor })
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '1', text: 'first' }], meta: { next_token: 'page-2' } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '2', text: 'second' }], meta: { result_count: 1 } }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, maxPages: 1, includeThreads: false }),
+    }) as never)
+    await expect(first.json()).resolves.toMatchObject({ complete: false, truncated: true, nextToken: 'page-2' })
+    expect(savedCursor).toBe('page-2')
+
+    const second = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, maxPages: 1, includeThreads: false }),
+    }) as never)
+
+    expect(new URL(fetchMock.mock.calls[1][0]).searchParams.get('pagination_token')).toBe('page-2')
+    await expect(second.json()).resolves.toMatchObject({ imported: 1, complete: true })
+    expect(savedCursor).toBe('')
+  })
+
+  it('無効な保存済みtokenは消去し、次回用の先頭再開を通知する', async () => {
+    mocks.db.setting.findUnique.mockImplementation(({ where }: { where: { key: string } }) => Promise.resolve(
+      where.key === 'x_oauth_scheduled_import_next_token' ? { value: 'expired-token' }
+        : where.key === 'x_oauth_access_token' ? { value: 'token' }
+          : where.key === 'x_oauth_user_id' ? { value: 'x-user-1' }
+            : null,
+    ))
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      headers: new Headers(),
+      json: async () => ({ title: 'Invalid Request', detail: 'pagination_token is invalid' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      complete: false,
+      hasMore: true,
+      warnings: [expect.objectContaining({ code: 'cursor_invalid' })],
+    })
+    expect(mocks.db.setting.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { key: 'x_oauth_scheduled_import_next_token' },
+      update: { value: '' },
+    }))
+  })
+
+  it('途中失敗ページのtokenを保持して、次回にそのページを再試行する', async () => {
+    let savedCursor = ''
+    mocks.db.setting.findUnique.mockImplementation(({ where }: { where: { key: string } }) => Promise.resolve(
+      where.key === 'x_oauth_scheduled_import_next_token' ? { value: savedCursor }
+        : where.key === 'x_oauth_access_token' ? { value: 'token' }
+          : where.key === 'x_oauth_user_id' ? { value: 'x-user-1' }
+            : null,
+    ))
+    mocks.db.setting.upsert.mockImplementation(({ update }: { update: { value: string } }) => {
+      savedCursor = update.value
+      return Promise.resolve({ key: 'x_oauth_scheduled_import_next_token', value: savedCursor })
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '1', text: 'first' }], meta: { next_token: 'page-2' } }),
+      })
+      .mockRejectedValueOnce(new Error('temporary network failure'))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: '2', text: 'second' }], meta: { result_count: 1 } }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const failed = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, maxPages: 2, includeThreads: false }),
+    }) as never)
+    await expect(failed.json()).resolves.toMatchObject({ complete: false, nextToken: 'page-2' })
+    expect(savedCursor).toBe('page-2')
+
+    const retried = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, maxPages: 1, includeThreads: false }),
+    }) as never)
+
+    expect(new URL(fetchMock.mock.calls[2][0]).searchParams.get('pagination_token')).toBe('page-2')
+    await expect(retried.json()).resolves.toMatchObject({ imported: 1, complete: true })
+    expect(savedCursor).toBe('')
+  })
+
   it('10ページで継続tokenを返し、次のrequestで11ページ目まで到達する', async () => {
     const fetchMock = vi.fn()
     for (let index = 1; index <= 11; index++) fetchMock.mockResolvedValueOnce({
@@ -446,6 +578,28 @@ describe('X OAuth bookmark fetch', () => {
       total: 0,
       complete: false,
       warnings: [expect.objectContaining({ code: 'invalid_response' })],
+    })
+  })
+
+  it('保存失敗したbookmarkを処理済み件数へ数えない', async () => {
+    mocks.db.bookmark.create.mockRejectedValueOnce(new Error('database unavailable'))
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: '1', text: 'not persisted' }] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ includeThreads: false }),
+    }) as never)
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toMatchObject({
+      imported: 0,
+      skipped: 0,
+      total: 0,
+      complete: false,
+      warnings: [expect.objectContaining({ code: 'persistence_error' })],
     })
   })
 

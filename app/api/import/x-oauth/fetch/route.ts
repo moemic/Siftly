@@ -65,11 +65,13 @@ interface XBookmarksResponse {
 }
 
 type ImportWarning = {
-  code: 'rate_limited' | 'reauth_required' | 'quota_exceeded' | 'upstream_error' | 'network_error' | 'invalid_response' | 'pagination_loop' | 'persistence_error'
+  code: 'rate_limited' | 'reauth_required' | 'quota_exceeded' | 'cursor_invalid' | 'upstream_error' | 'network_error' | 'invalid_response' | 'pagination_loop' | 'persistence_error'
   message: string
   upstreamStatus?: number
   retryAfterSeconds?: number
 }
+
+const SCHEDULED_CURSOR_KEY = 'x_oauth_scheduled_import_next_token'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -269,12 +271,15 @@ export async function POST(req: NextRequest) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return NextResponse.json({ error: 'JSON body must be an object' }, { status: 400 })
   }
-  const body = parsed as { maxPages?: number; nextToken?: string; repairArticles?: unknown; includeThreads?: unknown }
+  const body = parsed as { maxPages?: number; nextToken?: string; repairArticles?: unknown; includeThreads?: unknown; scheduled?: unknown }
   if (body.repairArticles !== undefined && body.repairArticles !== true && body.repairArticles !== false) {
     return NextResponse.json({ error: 'repairArticles must be a boolean' }, { status: 400 })
   }
   if (body.includeThreads !== undefined && body.includeThreads !== true && body.includeThreads !== false) {
     return NextResponse.json({ error: 'includeThreads must be a boolean' }, { status: 400 })
+  }
+  if (body.scheduled !== undefined && typeof body.scheduled !== 'boolean') {
+    return NextResponse.json({ error: 'scheduled must be a boolean' }, { status: 400 })
   }
   if (body.repairArticles === true) return repairArticles()
   const maxPages = Math.min(Math.max(1, Number.isInteger(body.maxPages) ? body.maxPages! : 10), 10)
@@ -291,11 +296,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'X user ID is missing. Please reconnect your X account.' }, { status: 401 })
   }
 
+  const scheduled = body.scheduled === true
+  const savedCursor = scheduled
+    ? await prisma.setting.findUnique({ where: { key: SCHEDULED_CURSOR_KEY } })
+    : null
+  const persistCursor = (cursor?: string) => prisma.setting.upsert({
+    where: { key: SCHEDULED_CURSOR_KEY },
+    create: { key: SCHEDULED_CURSOR_KEY, value: cursor ?? '' },
+    update: { value: cursor ?? '' },
+  })
+
   let imported = 0
   let skipped = 0
   let total = 0
   const archiveIds: string[] = []
-  let nextToken = body.nextToken?.trim() || undefined
+  let nextToken = body.nextToken?.trim() || savedCursor?.value?.trim() || undefined
   const seenTokens = new Set(nextToken ? [nextToken] : [])
   let truncated = false
   let complete = false
@@ -329,10 +344,27 @@ export async function POST(req: NextRequest) {
 
     if (!res.ok) {
       let errorType = ''
+      let errorBody: unknown
       try {
-        const errorBody: unknown = await res.json()
+        errorBody = await res.json()
         if (isRecord(errorBody) && typeof errorBody.type === 'string') errorType = errorBody.type
       } catch { /* use the upstream status when the body is not JSON */ }
+      const errorText = JSON.stringify(errorBody ?? '')
+      const invalidCursor = res.status === 400 && /pagination[_ ]token/i.test(errorText) && /invalid|expired|unknown|unavailable/i.test(errorText)
+      if (scheduled && nextToken && invalidCursor) {
+        try {
+          await persistCursor()
+        } catch {
+          warnings.push({ code: 'persistence_error', message: '無効なページtokenを保存領域から消去できませんでした。' })
+          failureStatus = 502
+          break
+        }
+        warnings.push({ code: 'cursor_invalid', message: '保存済みのページtokenが無効なため、次回の定期実行は先頭から再開します。' })
+        hasMore = true
+        failureStatus = 200
+        nextToken = undefined
+        break
+      }
       const retryAfterHeader = res.headers.get('retry-after')
       const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
         ? Number(retryAfterHeader)
@@ -378,6 +410,15 @@ export async function POST(req: NextRequest) {
     const tweets = data.data ?? []
     const pageToken = data.meta?.next_token
     if (!tweets.length && !pageToken) {
+      if (scheduled) {
+        try {
+          await persistCursor()
+        } catch {
+          warnings.push({ code: 'persistence_error', message: '完了したページtokenを消去できませんでした。' })
+          failureStatus = 502
+          break
+        }
+      }
       complete = true
       hasMore = false
       nextToken = undefined
@@ -392,7 +433,6 @@ export async function POST(req: NextRequest) {
 
     try {
     for (const tweet of tweets) {
-      total++
       const author = tweet.author_id ? usersMap.get(tweet.author_id) : undefined
       const threadRoot = { tweet, authorHandle: author?.username }
       const articleMedia = getXArticleMedia(tweet)
@@ -435,7 +475,6 @@ export async function POST(req: NextRequest) {
         select: { id: true, text: true, rawJson: true, deletedAt: true },
       })
       if (existing) {
-        threadRoots.push({ bookmarkId: existing.id, ...threadRoot })
         if (existing.deletedAt) await prisma.bookmark.update({ where: { id: existing.id }, data: { deletedAt: null } })
         await ensureArchiveRecord(existing.id)
         const articleText = getXArticleText(tweet)
@@ -482,7 +521,9 @@ export async function POST(req: NextRequest) {
         }
         if (refreshDeferred) deferred++
         else archiveIds.push(existing.id)
+        threadRoots.push({ bookmarkId: existing.id, ...threadRoot })
         skipped++
+        total++
         continue
       }
 
@@ -502,6 +543,7 @@ export async function POST(req: NextRequest) {
       )
 
       imported++
+      total++
       archiveIds.push(created.id)
       threadRoots.push({ bookmarkId: created.id, ...threadRoot })
     }
@@ -512,7 +554,19 @@ export async function POST(req: NextRequest) {
       break
     }
 
-    if (pageToken && seenTokens.has(pageToken)) {
+    const repeatedPageToken = !!pageToken && seenTokens.has(pageToken)
+    if (scheduled) {
+      try {
+        await persistCursor(!repeatedPageToken ? pageToken : undefined)
+      } catch {
+        warnings.push({ code: 'persistence_error', message: 'ページtokenの保存に失敗しました。次回は重複を避けながら再取得します。' })
+        hasMore = pageToken ? true : null
+        failureStatus = 502
+        break
+      }
+    }
+
+    if (repeatedPageToken) {
       warnings.push({ code: 'pagination_loop', message: 'X APIのページtokenが循環したため、取り込みを停止しました。' })
       hasMore = null
       nextToken = undefined
