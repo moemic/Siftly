@@ -8,7 +8,7 @@
 ## 目的と現在の方針
 
 - XのブックマークをSiftlyへ自動取得する。目安は3〜4日ごと。
-- 保存済みの未分類ブックマークへ週1回AI分類をかけ、OpenAI OAuth経由のCodex CLIでGPT-6 Lunaを使う。分類要求のreasoning effortは`xhigh`。
+- 保存済みの未分類ブックマークへ週1回AI分類をかけ、OpenAI OAuth経由のCodex CLIでGPT-5.6 Lunaを使う。分類要求のreasoning effortは`xhigh`。GPT-6 Lunaは現在のCodex CLI + ChatGPT OAuthでは拒否されるため使わない。
 - 実行結果をDiscord Webhookへ送る。
 - 分類エンジンは`llm`を維持する。Jevは任意実装として残っているが、既定値を変えない。10件比較では自動採用0件で、切り替えの根拠がない。
 - X APIの利用枠に達した記録がある。枠が戻ったことを確認するまで、Xへの実データ取得を試さない。
@@ -22,7 +22,7 @@ flowchart LR
   C[週次AI分類] --> A
   A --> X[X OAuth Bookmark API]
   A --> DB[(Siftly SQLite)]
-  A --> L[OpenAI OAuth: Codex CLI / GPT-6 Luna]
+  A --> L[OpenAI OAuth: Codex CLI / GPT-5.6 Luna / xhigh]
   I --> D[Discord Webhook]
   C --> D
 ```
@@ -46,9 +46,9 @@ flowchart LR
 | Siftly本体の起動 | **完了（ローカル設定）** | 以前のplistは配列で、LaunchAgentに必要な`Label`等を持たず、`plutil -lint`も失敗していた。2026-09-26に正しい辞書形式へ直し、`launchctl bootstrap gui/501 ...`で登録。`launchctl print gui/501/com.moemic.siftly`は`state = running`、`runs = 1`。`http://localhost:15000/settings`はHTTP 200で、設定画面にGPT-6 LunaとCodex CLIのサインイン状態を表示した。設定ファイルはこのMacの`~/Library/LaunchAgents/com.moemic.siftly.plist`にあり、Git管理外。 |
 | X定期ジョブ | **設定完了・次回実行待ち** | LaunchAgentを月曜・木曜10:00 JSTの`StartCalendarInterval`へ変更し、`launchctl print`にWeekday 1/4、Hour 10、Minute 0を確認。`runs = 0`。 |
 | 週次分類ジョブ | **設定完了・次回実行待ち** | 最新のX取得後に動くよう金曜10:00 JSTの`StartCalendarInterval`へ変更。Weekday 5、Hour 10、Minute 0を確認。`runs = 0`。 |
-| 自動ジョブの通知 | **送信経路あり・部分結果の判定要修正・未受信確認** | `.env`にWebhook設定があり、shellに送信処理がある。実行結果のDiscord受信は未確認。 |
+| 自動ジョブの通知 | **分類0件通知をWebhookが受理** | 2026-09-26、`scripts/siftly-scheduled-task.sh categorize`が0/0完了しWebhook POST成功で終了。インポート結果通知はX quota回復後に確認する。 |
 | X API | **外部待ち** | 過去ログにX APIの403 `spend-cap-reached`がある。現在の利用枠は未確認。枠が回復するまで実取得を止める。 |
-| AI分類 | **コード完了・実運用未確認** | `llm`が既定値。設定画面はOpenAI CLI/Codex CLIとGPT-6 Lunaを表示。Luna呼び出しに`reasoningEffort: 'xhigh'`を渡すコードとテストがある。最後に記録された全28テストファイル・220テスト、TypeScript、対象ESLintの合格は2026-09-23時点。 |
+| AI分類 | **設定・CLI smoke完了、実データ分類は未確認** | `llm`が既定値。設定はOpenAI CLI OAuth / `gpt-5.6-luna`。Codex CLIへ`xhigh`を指定した合成短文smoke成功。分類対象は0件のため、本番ブックマークを使う分類は未実行。 |
 | Git | **前回まで完了** | HEAD `127a97f8c590123b1bbc181a255fda52f69d822f`（`Improve categorization retries and engine configuration`、2026-09-24）。今回のLaunchAgent修正はMac上のユーザー設定で、リポジトリのコミットには含まれない。 |
 
 ## Phase 0 — 実装前に再利用する契約
@@ -152,7 +152,7 @@ flowchart LR
 
 **受け入れ条件:** shell構文検査とfake HTTP serverによる成功・部分成功・HTTP失敗・Webhook失敗の確認。Webhook失敗が検知され、X/分類APIが二重実行されない。通知本文に秘密値がない。実Webhook受信確認はQA-02で別に記録する。
 
-**実装記録:** 2026-09-26、Codex。`scripts/siftly-scheduled-task.sh`と`__tests__/siftly-scheduled-task.test.ts`を追加/変更。fake HTTPでimport完了・部分quota・HTTP失敗、分類0件/全件/部分/停止/timeout/runId変更、両処理のWebhook障害を検証。通知にcursor/raw detailが含まれず、処理APIは各1回だけ。最新`npx vitest run __tests__/siftly-scheduled-task.test.ts` — 7 tests passed。`npx tsc --noEmit`、`bash -n scripts/siftly-scheduled-task.sh` — pass。実Discord未送信。基盤実装コミット: `affc333`。QA-01追加コミットは下記に記録する。
+**実装記録:** 2026-09-26、Codex。`scripts/siftly-scheduled-task.sh`と`__tests__/siftly-scheduled-task.test.ts`を追加/変更。fake HTTPでimport完了・部分quota・HTTP失敗、分類0件/全件/部分/停止/timeout/runId変更、両処理のWebhook障害を検証。通知にcursor/raw detailが含まれず、処理APIは各1回だけ。最新`npx vitest run __tests__/siftly-scheduled-task.test.ts` — 7 tests passed。`npx tsc --noEmit`、`bash -n scripts/siftly-scheduled-task.sh` — pass。実装コミット: `affc333`、fake HTTP追加: `8cf0517`。
 
 ### SCH-01 — 3〜4日ごとの取得と週次分類をスリープ後も実行する
 
@@ -178,17 +178,17 @@ flowchart LR
 4. Webhook障害時にX取得や分類を再実行しない。
 5. fake server以外へ接続せず、DBの実ブックマークを変更しない。
 
-**実装記録:** 2026-09-26、Codex。分類timeoutをテスト時だけ即時化できる`SIFTLY_CATEGORIZE_TIMEOUT_SECONDS`（通常の既定は6時間）を用いてtimeout通知を検証。`npx vitest run` — 29 files / 253 tests passed。`npx tsc --noEmit` — pass。対象ESLint、`bash -n scripts/siftly-scheduled-task.sh`、`git diff --check` — pass。fake HTTP外への接続なし。コミットはこの記録を含む変更として追記する。
+**実装記録:** 2026-09-26、Codex。分類timeoutをテスト時だけ即時化できる`SIFTLY_CATEGORIZE_TIMEOUT_SECONDS`（通常の既定は6時間）を用いてtimeout通知を検証。`npx vitest run` — 30 files / 255 tests passed。`npx tsc --noEmit` — pass。対象ESLintはエラーなし（既存warning 2件）、`bash -n scripts/siftly-scheduled-task.sh`、`git diff --check` — pass。fake HTTP外への接続なし。実装コミット: `8cf0517`。
 
 ### QA-02 — OAuth分類とDiscordの実運用を一度だけ確認する
 
-**状態: 一部実施・ブロック中。** CLI statusはCodex credential・binary利用可能、provider=`openai`、auth=`cli`、model=`gpt-6-luna`を返すが、合成サンプルでの実行はCodex CLI 0.153.0が「GPT-6 Luna is not supported when using Codex with a ChatGPT account」と拒否。Bookmark DBは0件の未分類で、分類書き込みなし。エラー出力がCLI引数を含むと分かったため、Codex CLI失敗は定型エラーへ置換し、prompt/feedback文字列を出さないテストを追加した。実Discord受信も未確認。
+**状態: 一部完了。** GPT-6 LunaはCodex CLI 0.153.0がChatGPT OAuth利用時に拒否。ユーザー希望のGPT-5.6 Lunaを設定画面/APIで選択可能にし、ローカル設定をprovider=`openai`、auth=`cli`、model=`gpt-5.6-luna`へ変更。`xhigh`付きの合成短文Codex CLI smoke成功。通常のスケジュール分類を実行し、対象0件・保存0件で正常終了。結果Discord WebhookへのPOSTも成功。分類対象Bookmarkが0件なので、実ブックマークを含む分類成功は未確認。CLI失敗時のprompt漏えい防止は`45341ec`で修正済み。
 
 **条件と手順:** QA-01完了後に実施する。最初に`/api/settings/cli-status`でCLIが利用可能と分かる範囲を確認する。小さい分類対象で通常分類を1回実行し、モデル・推論強度、保存数、run状態をログ/応答から確認する。次にDiscordへ結果が届いたことを確認する。秘密値・Bookmark本文をログに転記しない。X APIはこのQAで呼ばない。
 
-**受け入れ条件:** Codex CLIの利用可能性、GPT-6 Lunaと`xhigh`、分類状態の正常終了、Discord受信を個別に記録。どれか一つでも未確認なら全体を「完了」にしない。
+**受け入れ条件:** Codex CLIの利用可能性、GPT-5.6 Lunaと`xhigh`、実ブックマーク分類状態、Discord Webhook受理を個別に記録。どれか一つでも未確認なら全体を「完了」にしない。
 
-**現在の確認記録:** 2026-09-26。`/api/settings/cli-status`はCodex CLI利用可能・credentialsあり、設定APIはOpenAI CLI authと`gpt-6-luna`を返す。未分類Bookmark 0件。合成サンプルで試したGPT-6 Luna要求はCLI側で拒否され、実分類とDiscord受信は未実施。CLI失敗時のprompt漏えいを防ぐ修正は`__tests__/codex-cli.test.ts`で検証済み。引き続きChatGPT OAuthで利用できるLunaモデルを特定してから実分類を再試行する。
+**現在の確認記録:** 2026-09-26。設定APIでprovider=`openai`、auth=`cli`、model=`gpt-5.6-luna`の保存を確認。codex CLI経由の合成短文smokeは`xhigh`で成功。DBの通常分類対象は0件。定期分類shellを実行し0/0完了、Discord Webhook POST成功（Bookmark変更・LLM分類呼び出しなし）。従って実ブックマークを使ったモデル分類だけ未確認で、対象ができるまで安全に保留する。設定UI/APIへのGPT-5.6 Luna追加は本作業中の変更。CLI失敗時のprompt漏えいを防ぐ修正は`45341ec`。
 
 ### QA-03 — Xの実取得と再開をquota回復後に確認する
 
@@ -209,7 +209,7 @@ flowchart LR
 - Siftly本体がログイン時に起動し、終了時は復帰し、localhost:15000/settingsが開く。
 - 取得が3〜4日ごと、分類が週1回動き、スリープ復帰時に欠落を回収する。分類は保存済みの未分類投稿を処理する。
 - 途中失敗/ページ継続/利用枠の状態を成功と誤認せず、再開できる。
-- GPT-6 Luna、OpenAI Codex CLI OAuth、`xhigh`が実運用で確認できる。
+- GPT-5.6 Luna、OpenAI Codex CLI OAuth、`xhigh`で実ブックマーク分類が確認できる。
 - 実行結果がDiscordへ届き、Webhook障害で元処理を二重実行しない。
 - X quota中に無用な実取得を繰り返さず、回復後の取得が重複やゴミ箱を壊さない。
 

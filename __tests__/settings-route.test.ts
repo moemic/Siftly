@@ -61,7 +61,7 @@ describe('Settings POST', () => {
     })
   })
 
-  it.each(['gpt-6-sol', 'gpt-6-luna'])('Codexモデル %s を保存する', async (model) => {
+  it.each(['gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-luna'])('Codexモデル %s を保存する', async (model) => {
     const response = await POST(new Request('http://localhost/api/settings', {
       method: 'POST', body: JSON.stringify({ codexCliModel: model }),
     }) as never)
