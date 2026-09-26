@@ -134,17 +134,17 @@ flowchart LR
 
 ### CAT-02 — 週次分類の件数と終了状態を保存結果にそろえる
 
-**状態: 実装済み・runId連携検証はQA-01へ。** 両分類経路の終了時`done`は進捗stateを維持し、全件数へ水増ししない。`categorized`は従来どおり保存済みBookmark ID数。0件、成功、一部未分類、停止、有効結果保存、処理開始前エラーをroute testで確認。定期shellの開始/状態照合時に`runId`が変化するケースは、QA-01のfake HTTP検証で追加確認する。
+**状態: 完了（route + fake HTTP検証）。** 両分類経路の終了時`done`は進捗stateを維持し、全件数へ水増ししない。`categorized`は保存済みBookmark ID数。0件、成功、一部未分類、停止、有効結果保存、処理開始前エラーに加え、定期shellがpoll時の`runId`変更を検知して停止することをmock HTTPで確認した。
 
 **変更範囲:** まずrouteと既存テストを読み、再現する不整合がある場合だけ修正する。観測のために新しいDBモデルや実行履歴基盤を先回りして作らない。
 
 **受け入れ条件:** 0件・全件成功・一部失敗・停止・別runIdへの切り替わりをモックテストで確認。`done`は処理済み数、`categorized`は実際に保存されたBookmark数として混同しない。既存件数をスケジューラーが正しく読める。
 
-**実装記録:** 2026-09-26、Codex。`app/api/categorize/route.ts`と`__tests__/selected-category-apply.test.ts`を変更。`npx vitest run __tests__/selected-category-apply.test.ts` — 20 tests passed。`npx tsc --noEmit`、対象ESLint — pass。0件/正常/一部保存/停止/処理開始前・pipeline開始時のエラーを検証。定期shellのrunId切替はQA-01に残す。コミットは台帳へ追記する。
+**実装記録:** 2026-09-26、Codex。`app/api/categorize/route.ts`、`__tests__/selected-category-apply.test.ts`を変更。`npx vitest run __tests__/selected-category-apply.test.ts` — 20 tests passed。`npx tsc --noEmit`、対象ESLint — pass。0件/正常/一部保存/停止/処理開始前・pipeline開始時のエラーを検証。`__tests__/siftly-scheduled-task.test.ts`でrunId切替も確認。コミット: `ecc9673`。
 
 ### NOT-01 — Discordへ部分成功・失敗を正しく伝える
 
-**状態: 要修正・未受信確認。** `scripts/siftly-scheduled-task.sh:43–56`にWebhook送信関数がある。importはHTTP成功ならレスポンス全文を通知するだけ（同ファイル:89–101）。分類はrunIdをポーリングし、エラー／成功を通知する（同ファイル:103–153）。importの部分失敗警告やページ継続を現在の応答から判断できない。
+**状態: 実装・fake HTTP検証済み、実Webhook未受信。** Discordには新規/既存/処理件数、完了/部分/失敗、定型化した警告コードだけを送る。X cursor、upstream detail、LLM error detailのレスポンス全文は送らない。Webhook失敗は検知して非0終了し、元の取得・分類要求を再実行しない。macOS bash 3.2互換で未設定認証配列を避ける。
 
 **変更範囲:** `scripts/siftly-scheduled-task.sh`と必要なshellテスト。IMP-01/02の応答契約に合わせて更新する。Webhook URL、token、生の投稿本文を通知に含めない。
 
@@ -152,7 +152,7 @@ flowchart LR
 
 **受け入れ条件:** shell構文検査とfake HTTP serverによる成功・部分成功・HTTP失敗・Webhook失敗の確認。Webhook失敗が検知され、X/分類APIが二重実行されない。通知本文に秘密値がない。実Webhook受信確認はQA-02で別に記録する。
 
-**実装後の記録:** `未着手` → 実装者・日付・検証結果・コミットを追記。
+**実装記録:** 2026-09-26、Codex。`scripts/siftly-scheduled-task.sh`と`__tests__/siftly-scheduled-task.test.ts`を追加/変更。fake HTTPでimport完了・部分quota・HTTP失敗、分類完了・部分・runId変更、両処理のWebhook障害を検証。通知にcursor/raw detailが含まれず、処理APIは各1回だけ。`npx vitest run __tests__/siftly-scheduled-task.test.ts` — 5 tests passed。`npx tsc --noEmit`、`bash -n scripts/siftly-scheduled-task.sh` — pass。実Discord未送信。コミットは台帳へ追記する。
 
 ### SCH-01 — 3〜4日ごとの取得と週次分類をスリープ後も実行する
 
