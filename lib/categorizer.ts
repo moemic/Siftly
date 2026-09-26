@@ -230,7 +230,9 @@ async function categorizeWithLlm(
   allSlugs: string[],
   language: UiLanguage,
   feedbackExamples: CategoryFeedbackExample[],
+  shouldAbort?: () => boolean,
 ): Promise<CategorizationResult[]> {
+  if (shouldAbort?.()) return []
   const prompt = buildCategorizationPrompt(bookmarks, categoryDescriptions, allSlugs, language, feedbackExamples)
   const provider = await getProvider()
   const authMode = await getActiveAuthMode()
@@ -269,14 +271,16 @@ async function categorizeWithLlm(
       }
     }
 
+    if (shouldAbort?.()) return []
     const initial = await requestCli(bookmarks)
     const recoveredByTweetId = new Map<string, CategorizationResult>()
     const initialValid = keepValidCategorizationResults(bookmarks, initial.results)
     for (const result of initialValid.results) recoveredByTweetId.set(result.tweetId, result)
 
-    if (initial.responseReceived && initialValid.missingBookmarks.length > 0) {
+    if (initial.responseReceived && initialValid.missingBookmarks.length > 0 && !shouldAbort?.()) {
       console.warn(`[categorize] CLI omitted or invalidated ${initialValid.missingBookmarks.length}/${bookmarks.length} results; retrying missing bookmarks in groups of ${CLI_RETRY_BATCH_SIZE}`)
       for (let index = 0; index < initialValid.missingBookmarks.length; index += CLI_RETRY_BATCH_SIZE) {
+        if (shouldAbort?.()) break
         const retryBookmarks = initialValid.missingBookmarks.slice(index, index + CLI_RETRY_BATCH_SIZE)
         const retry = await requestCli(retryBookmarks)
         if (retry.error) console.warn('[categorize] Smaller CLI retry failed:', retry.error)
@@ -292,7 +296,7 @@ async function categorizeWithLlm(
       return result ? [result] : []
     })
     const missingBookmarks = bookmarks.filter((bookmark) => !recoveredByTweetId.has(bookmark.tweetId))
-    if (missingBookmarks.length === 0) return recovered
+    if (missingBookmarks.length === 0 || shouldAbort?.()) return recovered
     if (recovered.length > 0) {
       console.warn(`[categorize] ${missingBookmarks.length}/${bookmarks.length} bookmarks remain unclassified after CLI retry`)
     }
@@ -334,6 +338,7 @@ async function categorizeWithLlm(
     throw new Error('No CLI available and no API key configured.')
   }
 
+  if (shouldAbort?.()) return []
   const model = await getActiveModel()
   const response = await client.createMessage({
     model,
@@ -503,12 +508,12 @@ export async function categorizeBatch(
   language: UiLanguage = 'ja',
   shouldAbort?: () => boolean,
 ): Promise<CategorizationResult[]> {
-  if (bookmarks.length === 0) return []
+  if (bookmarks.length === 0 || shouldAbort?.()) return []
 
   const feedbackExamples = await getRecentCategoryFeedbackExamples()
   const engine = getCategoryEngine()
   if (engine === 'llm') {
-    return categorizeWithLlm(bookmarks, client, categoryDescriptions, allSlugs, language, feedbackExamples)
+    return categorizeWithLlm(bookmarks, client, categoryDescriptions, allSlugs, language, feedbackExamples, shouldAbort)
   }
 
   const jevOutcomes = await categorizeWithJev(
@@ -538,6 +543,7 @@ export async function categorizeBatch(
           allSlugs,
           language,
           feedbackExamples.slice(0, 12),
+          shouldAbort,
         ))
       } catch (error) {
         console.warn('[categorize] Luna fallback failed for', bookmark.tweetId, error instanceof Error ? error.message : error)

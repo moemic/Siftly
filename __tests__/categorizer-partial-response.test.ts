@@ -69,4 +69,63 @@ describe('Lunaの部分応答', () => {
     expect(mocks.codexPrompt.mock.calls[2][0]).not.toContain('tweet-6')
     expect(mocks.codexPrompt.mock.calls[2][1]).toMatchObject({ reasoningEffort: 'xhigh' })
   })
+
+  it('最初のLLM応答中に停止されたら有効結果を保持して追加要求を送らない', async () => {
+    let aborted = false
+    mocks.codexPrompt.mockImplementationOnce(async () => {
+      aborted = true
+      return {
+        success: true,
+        data: JSON.stringify([{ tweetId: 'tweet-1', assignments: [{ category: 'dev-tools', confidence: 0.9 }] }]),
+      }
+    })
+    const bookmarks = [
+      { tweetId: 'tweet-1', text: 'Bookmark 1' },
+      { tweetId: 'tweet-2', text: 'Bookmark 2' },
+    ]
+
+    const results = await categorizeBatch(bookmarks, null, {}, ['dev-tools'], 'ja', () => aborted)
+
+    expect(results.map((result) => result.tweetId)).toEqual(['tweet-1'])
+    expect(mocks.codexPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('停止済みの分類はLLMを起動しない', async () => {
+    const results = await categorizeBatch(
+      [{ tweetId: 'tweet-1', text: 'Bookmark 1' }],
+      null,
+      {},
+      ['dev-tools'],
+      'ja',
+      () => true,
+    )
+
+    expect(results).toEqual([])
+    expect(mocks.codexPrompt).not.toHaveBeenCalled()
+  })
+
+  it('再試行中に停止されたら受領済み結果を保ち、次の再試行を送らない', async () => {
+    let aborted = false
+    mocks.codexPrompt
+      .mockResolvedValueOnce({
+        success: true,
+        data: JSON.stringify([{ tweetId: 'tweet-1', assignments: [{ category: 'dev-tools', confidence: 0.9 }] }]),
+      })
+      .mockImplementationOnce(async () => {
+        aborted = true
+        return {
+          success: true,
+          data: JSON.stringify([{ tweetId: 'tweet-2', assignments: [{ category: 'dev-tools', confidence: 0.8 }] }]),
+        }
+      })
+
+    const bookmarks = Array.from({ length: 7 }, (_, index) => ({
+      tweetId: `tweet-${index + 1}`,
+      text: `Bookmark ${index + 1}`,
+    }))
+    const results = await categorizeBatch(bookmarks, null, {}, ['dev-tools'], 'ja', () => aborted)
+
+    expect(results.map((result) => result.tweetId)).toEqual(['tweet-1', 'tweet-2'])
+    expect(mocks.codexPrompt).toHaveBeenCalledTimes(2)
+  })
 })

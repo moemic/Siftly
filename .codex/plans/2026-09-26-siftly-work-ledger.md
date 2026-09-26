@@ -118,11 +118,11 @@ flowchart LR
 
 **受け入れ条件:** 自動モードの再取り込みでは`deletedAt`を保持し、同項目をarchive/thread処理へ再投入しない。既存の手動操作については既存仕様を保つか、明示された新仕様に合わせる。両モードのテストを置く。
 
-**実装記録:** 2026-09-26、Codex。`app/api/import/x-oauth/fetch/route.ts`と`__tests__/x-oauth-fetch.test.ts`を変更。`npx vitest run __tests__/x-oauth-fetch.test.ts` — 34 tests passed。`npx tsc --noEmit`、対象ESLint — pass。ローカルDBへの実データ変更なし。コミットは台帳へ追記する。
+**実装記録:** 2026-09-26、Codex。`app/api/import/x-oauth/fetch/route.ts`と`__tests__/x-oauth-fetch.test.ts`を変更。`npx vitest run __tests__/x-oauth-fetch.test.ts` — 34 tests passed。`npx tsc --noEmit`、対象ESLint — pass。ローカルDBへの実データ変更なし。コミット: `b792162`。
 
 ### CAT-01 — 停止要求後にLLMの追加要求を送らない
 
-**状態: 要実装。** `categorizeBatch()`は`shouldAbort`を受け取るが、`llm`経路は`categorizeWithLlm()`へ渡さない（`lib/categorizer.ts:498–520`）。LLM応答の欠落分再試行も最大5件ずつ続く（同ファイル:13, 236–327）。`DELETE /api/categorize`は停止フラグを立てるだけで、既に動作中のCLI呼び出しを中断しない。
+**状態: 完了（ユニットテスト）。** `shouldAbort`をLLM経路まで伝播し、起動前・初回応答後・各retry前・SDK fallback前に確認する。すでに動作中のCLI要求は強制終了せず、既存timeoutまで待つ。その応答内の有効結果は保持し、以後の要求を送らない。
 
 **変更範囲:** `lib/categorizer.ts`、必要な場合だけ`app/api/categorize/route.ts`、既存分類テスト。
 
@@ -130,7 +130,7 @@ flowchart LR
 
 **受け入れ条件:** 最初のLLM要求中に停止を入れたテストで、追加retry/fallback要求が送られない。有効な既着結果を誤って破棄しない。通常時の5件以下の欠落retryと`xhigh`を維持する。
 
-**実装後の記録:** `未着手` → 実装者・日付・テスト結果・コミットを追記。
+**実装記録:** 2026-09-26、Codex。`lib/categorizer.ts`、`__tests__/categorizer-partial-response.test.ts`を変更。停止済み・初回応答中の停止・retry中の停止を検証。`npx vitest run __tests__/categorizer-partial-response.test.ts` — 4 tests passed。`npx tsc --noEmit`、対象ESLint — pass。外部LLM通信なし。コミットは台帳へ追記する。
 
 ### CAT-02 — 週次分類の件数と終了状態を保存結果にそろえる
 
