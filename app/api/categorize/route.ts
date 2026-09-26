@@ -204,7 +204,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       const wasStopped = globalState.categorizationAbort
       globalState.categorizationAbort = false
       setState({
-        status: 'idle', stage: null, done: wasStopped ? getState().done : selectedIds.length, total: selectedIds.length,
+        status: 'idle', stage: null, done: getState().done, total: selectedIds.length,
         error: wasStopped ? 'Stopped by user' : getState().lastError,
       })
     })
@@ -488,7 +488,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       setState({
         status: 'idle',
         stage: null,
-        done: wasStopped ? getState().done : total,
+        done: getState().done,
         total,
         error: wasStopped ? 'Stopped by user' : getState().lastError,
       })

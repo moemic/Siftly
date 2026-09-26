@@ -130,17 +130,17 @@ flowchart LR
 
 **受け入れ条件:** 最初のLLM要求中に停止を入れたテストで、追加retry/fallback要求が送られない。有効な既着結果を誤って破棄しない。通常時の5件以下の欠落retryと`xhigh`を維持する。
 
-**実装記録:** 2026-09-26、Codex。`lib/categorizer.ts`、`__tests__/categorizer-partial-response.test.ts`を変更。停止済み・初回応答中の停止・retry中の停止を検証。`npx vitest run __tests__/categorizer-partial-response.test.ts` — 4 tests passed。`npx tsc --noEmit`、対象ESLint — pass。外部LLM通信なし。コミットは台帳へ追記する。
+**実装記録:** 2026-09-26、Codex。`lib/categorizer.ts`、`__tests__/categorizer-partial-response.test.ts`を変更。停止済み・初回応答中の停止・retry中の停止を検証。`npx vitest run __tests__/categorizer-partial-response.test.ts` — 4 tests passed。`npx tsc --noEmit`、対象ESLint — pass。外部LLM通信なし。コミット: `249d303`。
 
 ### CAT-02 — 週次分類の件数と終了状態を保存結果にそろえる
 
-**状態: 部分実装・追加確認が必要。** 選択分類経路は`writeCategoryResults()`の保存ID数を`categorized`へ加算する（`app/api/categorize/route.ts:170–202`）。通常の並列処理も保存ID数を使う（同ファイル:332–358）。ただし、0件や途中失敗の終端状態、各stage件数、停止との組み合わせをスケジューラー目線で確認するテストが足りるかは未確定。
+**状態: 実装済み・runId連携検証はQA-01へ。** 両分類経路の終了時`done`は進捗stateを維持し、全件数へ水増ししない。`categorized`は従来どおり保存済みBookmark ID数。0件、成功、一部未分類、停止、有効結果保存、処理開始前エラーをroute testで確認。定期shellの開始/状態照合時に`runId`が変化するケースは、QA-01のfake HTTP検証で追加確認する。
 
 **変更範囲:** まずrouteと既存テストを読み、再現する不整合がある場合だけ修正する。観測のために新しいDBモデルや実行履歴基盤を先回りして作らない。
 
 **受け入れ条件:** 0件・全件成功・一部失敗・停止・別runIdへの切り替わりをモックテストで確認。`done`は処理済み数、`categorized`は実際に保存されたBookmark数として混同しない。既存件数をスケジューラーが正しく読める。
 
-**実装後の記録:** `未着手` → 調査結果（修正不要なら根拠）・実装者・日付・テスト結果・コミットを追記。
+**実装記録:** 2026-09-26、Codex。`app/api/categorize/route.ts`と`__tests__/selected-category-apply.test.ts`を変更。`npx vitest run __tests__/selected-category-apply.test.ts` — 20 tests passed。`npx tsc --noEmit`、対象ESLint — pass。0件/正常/一部保存/停止/処理開始前・pipeline開始時のエラーを検証。定期shellのrunId切替はQA-01に残す。コミットは台帳へ追記する。
 
 ### NOT-01 — Discordへ部分成功・失敗を正しく伝える
 
