@@ -475,6 +475,11 @@ export async function POST(req: NextRequest) {
         select: { id: true, text: true, rawJson: true, deletedAt: true },
       })
       if (existing) {
+        if (existing.deletedAt && scheduled) {
+          skipped++
+          total++
+          continue
+        }
         if (existing.deletedAt) await prisma.bookmark.update({ where: { id: existing.id }, data: { deletedAt: null } })
         await ensureArchiveRecord(existing.id)
         const articleText = getXArticleText(tweet)

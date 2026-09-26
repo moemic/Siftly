@@ -108,17 +108,17 @@ flowchart LR
 
 **受け入れ条件:** 11ページ以上、プロセス停止と再起動、同じページの再試行、token失効、最終ページ後の新規走査をモックテストで確認。既存の重複回避を保ち、1回の起動で無制限にXを呼ばない。API quota中に実Xで試さない。
 
-**実装記録:** 2026-09-26、Codex。既存`Setting`のみを再利用し、スキーマ変更なし。`scripts/siftly-scheduled-task.sh`は`scheduled:true`でrouteを呼ぶ。X API通信・ページtoken再開・token失効はすべてmock。`npx vitest run __tests__/x-oauth-fetch.test.ts` — 32 tests passed。`npx tsc --noEmit`、対象ESLint、`bash -n scripts/siftly-scheduled-task.sh` — pass。コミットは台帳へ追記する。
+**実装記録:** 2026-09-26、Codex。既存`Setting`のみを再利用し、スキーマ変更なし。`scripts/siftly-scheduled-task.sh`は`scheduled:true`でrouteを呼ぶ。X API通信・ページtoken再開・token失効はすべてmock。`npx vitest run __tests__/x-oauth-fetch.test.ts` — 32 tests passed。`npx tsc --noEmit`、対象ESLint、`bash -n scripts/siftly-scheduled-task.sh` — pass。コミット: `797ac7e`。
 
 ### IMP-03 — 自動取り込みでゴミ箱のBookmarkを復元しない
 
-**状態: 要実装。** OAuth取り込みは既存Bookmarkを見つけると`deletedAt: null`へ戻す（`app/api/import/x-oauth/fetch/route.ts:344–351`）。自動定期実行でもユーザーが削除したデータが復元される。
+**状態: 完了（モック検証）。** `scheduled:true`の場合、既存行に`deletedAt`があれば取り込み件数の`skipped`へ数えるだけで、復元・archive enqueue・thread処理をしない。手動要求はこれまでどおり復元する。
 
 **変更範囲:** 同じrouteと`__tests__/x-oauth-fetch.test.ts`。手動UIの現行動作との互換性を確認してから、呼び出しモードを明示する。Cookie同期や別の取得経路へ変更しない。
 
 **受け入れ条件:** 自動モードの再取り込みでは`deletedAt`を保持し、同項目をarchive/thread処理へ再投入しない。既存の手動操作については既存仕様を保つか、明示された新仕様に合わせる。両モードのテストを置く。
 
-**実装後の記録:** `未着手` → 実装者・日付・テスト結果・コミットを追記。
+**実装記録:** 2026-09-26、Codex。`app/api/import/x-oauth/fetch/route.ts`と`__tests__/x-oauth-fetch.test.ts`を変更。`npx vitest run __tests__/x-oauth-fetch.test.ts` — 34 tests passed。`npx tsc --noEmit`、対象ESLint — pass。ローカルDBへの実データ変更なし。コミットは台帳へ追記する。
 
 ### CAT-01 — 停止要求後にLLMの追加要求を送らない
 

@@ -427,6 +427,48 @@ describe('X OAuth bookmark fetch', () => {
     expect(new URL(fetchMock.mock.calls[10][0]).searchParams.get('pagination_token')).toBe('token-10')
   })
 
+  it('定期実行では削除済みbookmarkを復元も再処理もしない', async () => {
+    mocks.db.bookmark.findUnique.mockResolvedValue({
+      id: 'deleted-bookmark', tweetId: '1', text: 'deleted', rawJson: '{}', deletedAt: new Date(),
+    })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: '1', text: 'deleted' }] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ scheduled: true, includeThreads: false }),
+    }) as never)
+
+    expect(mocks.db.bookmark.update).not.toHaveBeenCalled()
+    expect(mocks.ensure).not.toHaveBeenCalled()
+    expect(mocks.enqueue).toHaveBeenCalledWith([])
+    await expect(response.json()).resolves.toMatchObject({ imported: 0, skipped: 1, total: 1, complete: true })
+  })
+
+  it('手動インポートは従来どおり削除済みbookmarkを復元する', async () => {
+    mocks.db.bookmark.findUnique.mockResolvedValue({
+      id: 'deleted-bookmark', tweetId: '1', text: 'deleted', rawJson: '{}', deletedAt: new Date(),
+    })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: '1', text: 'restored' }] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await POST(new Request('http://localhost/api/import/x-oauth/fetch', {
+      method: 'POST', body: JSON.stringify({ includeThreads: false }),
+    }) as never)
+
+    expect(mocks.db.bookmark.update).toHaveBeenCalledWith({
+      where: { id: 'deleted-bookmark' },
+      data: { deletedAt: null },
+    })
+    expect(mocks.ensure).toHaveBeenCalledWith('deleted-bookmark')
+    expect(mocks.enqueue).toHaveBeenCalledWith(['deleted-bookmark'])
+  })
+
   it('途中の429を部分成功として返し、失敗したページからの再開情報を含める', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
