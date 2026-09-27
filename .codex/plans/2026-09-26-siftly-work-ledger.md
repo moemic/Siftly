@@ -224,6 +224,8 @@ flowchart LR
 
 **2026-09-27再確認:** Chromeの既存タブを読み取ろうとしたが、接続エラーが続き、利用状況の内容は得られなかった。新規Chromeタブも自動操作側から作成できなかった。X APIの取得要求は送っていない。`launchctl print-disabled`は現在も`=> disabled`、取得サービスは未登録。plistの定義は月曜・木曜10:00のままで、本体`/settings`はHTTP 200、週次分類は前回実行が終了コード0。回復情報とcomputer-use診断結果はユーザー確認待ち。
 
+**2026-09-27継続確認:** `launchctl`を読み取り専用で再確認。`com.moemic.siftly.live-import`は引き続きdisabledかつ未登録。実行plistは月曜・木曜10:00、週次分類plistは金曜10:00で、3つのplistはすべて`plutil -lint`成功。本体LaunchAgentはrunning（PID 16713）、分類Agentは未実行（runs=1、last exit code=0）。ChromeにDeveloper Consoleタブがあるが、タブの読取はComputer Useで30秒timeoutとなり、quota画面を取得できなかった。X APIへの通信はしていない。安全な次の条件は、ユーザーが`hermes computer-use doctor`の結果を共有するか、Xの利用枠回復を確認すること。確認までimport Agentは停止維持。
+
 **次の作業（回復確認後だけ）:** まず実取得APIを`scheduled:true, maxPages:1`で1回検証し、件数・complete/hasMore/warnings・保存済みカーソルと安全なDiscord通知を確認する。想定外の403/429なら再取得しない。新規/削除済み/途中失敗など自然に発生しないケースはモック結果と実観測を区別し、失敗を意図的に起こすために余分なX API要求をしない。確認が成功したら下記で同じ月・木10時設定を復帰し、`launchctl print`で登録・calendar triggerを確認する。新たなジョブ基盤は不要。
 
 ```sh
