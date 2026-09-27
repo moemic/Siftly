@@ -43,7 +43,7 @@ flowchart LR
 
 | 項目 | 状態 | 根拠 |
 |---|---|---|
-| Siftly本体の起動 | **完了（起動・自動復帰・画面表示確認）** | 専用`scripts/siftly-server.sh`を起動先にした。現在のLaunchAgentは`running`、PID 16713で、Next.jsが15000番をlisten。2026-09-27にブラウザーで`http://localhost:15000/settings`の設定画面を表示し、`localhost`・`127.0.0.1`・`::1`へのproxy迂回HTTPはいずれも200。proxyを使った素のcurlだけはtimeoutしたため、サーバー停止と誤認しない。ユーザーLaunchAgent plistはGit管理外。 |
+| Siftly本体の起動 | **完了（起動・自動復帰・画面表示確認）** | 専用`scripts/siftly-server.sh`を起動先にした。現在のLaunchAgentは`running`、PID 16713。Node PID 16768がTCP `*:15000`をlisten。2026-09-27にブラウザーで`http://localhost:15000/settings`を表示し、再読込後に設定読込中表示が消えることを確認。`localhost`・`127.0.0.1`・`::1`・`/api/settings`は最終確認でHTTP 200。初回の4秒curlはtimeoutし、同じ再試行はHTTP 200。2秒上限のIPv4連続20回では5回timeoutしたが、ブラウザーでの再現はなく、timeoutの原因は未確定。ユーザーLaunchAgent plistはGit管理外。 |
 | X定期ジョブ | **設定済み・利用枠待ちで停止中** | 月曜・木曜10:00 JSTのplistを保持。2026-09-27に`launchctl disable`と`bootout`を実施し、`print-disabled`で`=> disabled`、未登録を確認。回復確認後に再登録する。 |
 | 週次分類ジョブ | **設定・実起動確認完了** | 金曜10:00 JST。2026-09-27にLaunchAgentを`kickstart`し、対象0件で`runs = 1`、`last exit code = 0`を確認。自然な金曜の時刻到来は未確認。 |
 | 自動ジョブの通知 | **Webhook受理・Discord表示・通知設定確認済み／端末配信は未確認** | 実ブックマーク1/1件の分類結果通知はHTTP 204。テスト投稿はDiscordの`#通知`に表示。2026-09-27の画面確認でチャンネルはミュートされず「全メッセージ」（カテゴリー既定）、macOSのDiscord通知許可もon（デスクトップ/通知センター/ロック画面有効）。今回の追加テストもWebhook HTTP 204で受理。実際のOSバナーまたはモバイル端末で受信した瞬間は観測できていない。X取得結果通知はQA-03待ち。 |
@@ -213,6 +213,8 @@ flowchart LR
 **2026-09-27 最終追確認:** Discordデスクトップを開き、`#通知`に前記テストと実分類通知が残っていること、チャンネル通知が「すべてのメッセージ」（カテゴリー既定）でミュートされていないことを再確認。ユーザーの「これを解消して」を受け、メンションなしの新しい確認投稿をWebhookへ1件送り、HTTP 204で受理された。Webhook受理はDiscord側での表示・端末配信の証明ではない。今回の新投稿はチャンネル上で未再確認で、実際のOSバナーおよびユーザーのスマートフォンでの受信はこの環境から観測できないため、最後は端末側で受信確認待ち。Siftlyはブラウザーで`/settings`を表示し、curlのproxy経由timeoutはサーバー障害ではないと確認。Gitはこの追記後に更新する。
 
 **2026-09-27 実機通知の接続確認:** `phone-harness --doctor ios`は、Quartz/Vision/AppKit・Accessibility・Screen Recording・iPhone Mirroringのインストール/起動はpass、「mirroring window found」だけfailし、手動でiPhone Mirroringを開いてペアリングするよう案内。画面取得はこのfail以前のVision初期化エラーで終わった。iPhone上の設定変更や操作はしていない。ユーザーがiPhone Mirroringを開き、iPhoneをペアリング/ロックして接続したと確認後、一度だけ再検証する。
+
+**2026-09-27 Siftly再確認:** `launchctl print`で本体`running`（PID 16713）、`lsof`でNext.js子プロセスPID 16768が15000番をlisten。`/settings`はlocalhostで1.22秒、IPv6で0.29秒、`/api/settings`は0.05秒でHTTP 200。可視ブラウザーで再読込後も設定画面が表示され、5秒後に読込中表示が消えた。最初の4秒curlはtimeout、その同条件の再試行は成功。`--max-time 2`のIPv4 GETを20回行うと5回HTTP 000になったため断続的な遅延は記録するが、ユーザーのブラウザー障害を再現したとは扱わず、原因を推測してコード変更しない。ログには以前の開発コンパイル/Proxy計測が最大約30秒の行もある一方、再読込後の`/settings`は81ms、設定APIは5〜818msで応答した。`./node_modules/.bin/vitest run` — 30 files / 256 tests passed、`./node_modules/.bin/tsc --noEmit` — pass。3つのLaunchAgent plistはすべて`plutil -lint`成功。OS timezoneはJST、取得設定は月・木10時、分類設定は金10時。取得Agentはdisabled・未登録、分類Agentはruns=1・exit code 0。X quotaと実機プッシュ、実際のMacスリープ復帰は引き続き未確認。
 
 ### QA-03 — Xの実取得と再開をquota回復後に確認する
 
