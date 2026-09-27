@@ -212,6 +212,8 @@ flowchart LR
 
 **2026-09-27 最終追確認:** Discordデスクトップを開き、`#通知`に前記テストと実分類通知が残っていること、チャンネル通知が「すべてのメッセージ」（カテゴリー既定）でミュートされていないことを再確認。ユーザーの「これを解消して」を受け、メンションなしの新しい確認投稿をWebhookへ1件送り、HTTP 204で受理された。Webhook受理はDiscord側での表示・端末配信の証明ではない。今回の新投稿はチャンネル上で未再確認で、実際のOSバナーおよびユーザーのスマートフォンでの受信はこの環境から観測できないため、最後は端末側で受信確認待ち。Siftlyはブラウザーで`/settings`を表示し、curlのproxy経由timeoutはサーバー障害ではないと確認。Gitはこの追記後に更新する。
 
+**2026-09-27 実機通知の接続確認:** `phone-harness --doctor ios`は、Quartz/Vision/AppKit・Accessibility・Screen Recording・iPhone Mirroringのインストール/起動はpass、「mirroring window found」だけfailし、手動でiPhone Mirroringを開いてペアリングするよう案内。画面取得はこのfail以前のVision初期化エラーで終わった。iPhone上の設定変更や操作はしていない。ユーザーがiPhone Mirroringを開き、iPhoneをペアリング/ロックして接続したと確認後、一度だけ再検証する。
+
 ### QA-03 — Xの実取得と再開をquota回復後に確認する
 
 **状態: 外部待ち。** 過去に403 `spend-cap-reached`を記録。最新の残枠・回復日時は不明で、今はX APIを呼ばない。
@@ -225,6 +227,8 @@ flowchart LR
 **2026-09-27再確認:** Chromeの既存タブを読み取ろうとしたが、接続エラーが続き、利用状況の内容は得られなかった。新規Chromeタブも自動操作側から作成できなかった。X APIの取得要求は送っていない。`launchctl print-disabled`は現在も`=> disabled`、取得サービスは未登録。plistの定義は月曜・木曜10:00のままで、本体`/settings`はHTTP 200、週次分類は前回実行が終了コード0。回復情報とcomputer-use診断結果はユーザー確認待ち。
 
 **2026-09-27継続確認:** `launchctl`を読み取り専用で再確認。`com.moemic.siftly.live-import`は引き続きdisabledかつ未登録。実行plistは月曜・木曜10:00、週次分類plistは金曜10:00で、3つのplistはすべて`plutil -lint`成功。本体LaunchAgentはrunning（PID 16713）、分類Agentは未実行（runs=1、last exit code=0）。ChromeにDeveloper Consoleタブがあるが、タブの読取はComputer Useで30秒timeoutとなり、quota画面を取得できなかった。X APIへの通信はしていない。安全な次の条件は、ユーザーが`hermes computer-use doctor`の結果を共有するか、Xの利用枠回復を確認すること。確認までimport Agentは停止維持。
+
+**2026-09-27 ブラウザー経路の追加確認:** `agent-browser session list`はactive sessionなし。別ブラウザー経路からユーザーのログイン済みDeveloper Consoleへ接続できる根拠がないため、新しい未認証セッションは作成せず、利用枠を推定しない。Chromeタブの画面読取は引き続きユーザー側の`hermes computer-use doctor`または手動の回復確認待ち。X APIは呼んでいない。
 
 **次の作業（回復確認後だけ）:** まず実取得APIを`scheduled:true, maxPages:1`で1回検証し、件数・complete/hasMore/warnings・保存済みカーソルと安全なDiscord通知を確認する。想定外の403/429なら再取得しない。新規/削除済み/途中失敗など自然に発生しないケースはモック結果と実観測を区別し、失敗を意図的に起こすために余分なX API要求をしない。確認が成功したら下記で同じ月・木10時設定を復帰し、`launchctl print`で登録・calendar triggerを確認する。新たなジョブ基盤は不要。
 
