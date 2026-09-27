@@ -232,6 +232,8 @@ flowchart LR
 
 **2026-09-27 ブラウザー経路の追加確認:** `agent-browser session list`はactive sessionなし。別ブラウザー経路からユーザーのログイン済みDeveloper Consoleへ接続できる根拠がないため、新しい未認証セッションは作成せず、利用枠を推定しない。Chromeタブの画面読取は引き続きユーザー側の`hermes computer-use doctor`または手動の回復確認待ち。X APIは呼んでいない。
 
+**2026-09-27 Chrome経路の再確認:** ユーザーChromeからDeveloper Portalを読み取り専用で開く試みも完了できなかった。`visible:false`指定は未対応、該当URLの既存タブも見つからず、可視性指定を外した起動は30秒でtimeoutしてComputer Useセッションがresetした。認証情報は入力せず、X API通信もしていない。Computer Useの追加診断が必要ならユーザーに`hermes computer-use doctor`を依頼し、quota回復確認までは引き続きX取得を無効に保つ。
+
 **次の作業（回復確認後だけ）:** まず実取得APIを`scheduled:true, maxPages:1`で1回検証し、件数・complete/hasMore/warnings・保存済みカーソルと安全なDiscord通知を確認する。想定外の403/429なら再取得しない。新規/削除済み/途中失敗など自然に発生しないケースはモック結果と実観測を区別し、失敗を意図的に起こすために余分なX API要求をしない。確認が成功したら下記で同じ月・木10時設定を復帰し、`launchctl print`で登録・calendar triggerを確認する。新たなジョブ基盤は不要。
 
 ```sh
