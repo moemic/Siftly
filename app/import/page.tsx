@@ -734,7 +734,7 @@ function LiveImportTab({ onSynced }: { onSynced: (result: ImportResult) => void 
         body: JSON.stringify({ maxPages: 10, includeThreads, ...(nextToken ? { nextToken } : {}) }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? '取得に失敗しました')
+      if (!res.ok) throw new Error(data.error ?? data.warnings?.[0]?.message ?? '取得に失敗しました')
       setContinuationToken(data.truncated && data.nextToken ? data.nextToken : null)
       onSynced({
         imported: data.imported ?? 0, skipped: data.skipped ?? 0, total: data.total ?? 0, parsed: data.total ?? 0,

@@ -8,7 +8,7 @@
 ## 目的と現在の方針
 
 - XのブックマークをSiftlyへ自動取得する。目安は3〜4日ごと。
-- 保存済みの未分類ブックマークへ週1回AI分類をかけ、OpenAI OAuth経由のCodex CLIでGPT-5.6 Lunaを使う。分類要求のreasoning effortは`xhigh`。GPT-6 Lunaは現在のCodex CLI + ChatGPT OAuthでは拒否されるため使わない。
+- 保存済みの未分類ブックマークへ週1回AI分類をかけ、OpenAI OAuth経由のCodex CLIでGPT-6 Lunaを使う。分類要求のreasoning effortは`xhigh`。旧GPT-5.6 Lunaからの切替はMODEL-01で反映・確認する。
 - 実行結果をDiscord Webhookへ送る。
 - 分類エンジンは`llm`を維持する。Jevは任意実装として残っているが、既定値を変えない。10件比較では自動採用0件で、切り替えの根拠がない。
 - X APIの利用枠に達した記録がある。枠が戻ったことを確認するまで、Xへの実データ取得を試さない。
@@ -22,7 +22,7 @@ flowchart LR
   C[週次AI分類] --> A
   A --> X[X OAuth Bookmark API]
   A --> DB[(Siftly SQLite)]
-  A --> L[OpenAI OAuth: Codex CLI / GPT-5.6 Luna / xhigh]
+  A --> L[OpenAI OAuth: Codex CLI / GPT-6 Luna / xhigh]
   I --> D[Discord Webhook]
   C --> D
 ```
@@ -43,13 +43,35 @@ flowchart LR
 
 | 項目 | 状態 | 根拠 |
 |---|---|---|
-| Siftly本体の起動 | **完了（起動・自動復帰・画面表示確認）** | 専用`scripts/siftly-server.sh`を起動先にした。現在のLaunchAgentは`running`、PID 16713。Node PID 16768がTCP `*:15000`をlisten。2026-09-27にブラウザーで`http://localhost:15000/settings`を表示し、再読込後に設定読込中表示が消えることを確認。`localhost`・`127.0.0.1`・`::1`・`/api/settings`は最終確認でHTTP 200。初回の4秒curlはtimeoutし、同じ再試行はHTTP 200。2秒上限のIPv4連続20回では5回timeoutしたが、ブラウザーでの再現はなく、timeoutの原因は未確定。ユーザーLaunchAgent plistはGit管理外。 |
+| Siftly本体の起動 | **完了（起動・自動復帰・画面表示確認）** | 専用`scripts/siftly-server.sh`を起動先にした。現在のLaunchAgentは`running`、PID 71004。2026-09-27の再起動後も`/api/settings`と`/api/settings/cli-status`はHTTP 200。ブラウザーで`http://localhost:15000/settings`を表示し、再読込後に設定読込中表示が消えることを確認。`localhost`・`127.0.0.1`・`::1`もHTTP 200。ユーザーLaunchAgent plistはGit管理外。 |
 | X定期ジョブ | **設定済み・利用枠待ちで停止中** | 月曜・木曜10:00 JSTのplistを保持。2026-09-27に`launchctl disable`と`bootout`を実施し、`print-disabled`で`=> disabled`、未登録を確認。回復確認後に再登録する。 |
 | 週次分類ジョブ | **設定・実起動確認完了** | 金曜10:00 JST。2026-09-27にLaunchAgentを`kickstart`し、対象0件で`runs = 1`、`last exit code = 0`を確認。自然な金曜の時刻到来は未確認。 |
-| 自動ジョブの通知 | **Webhook受理・Discord表示・通知設定確認済み／端末配信は未確認** | 実ブックマーク1/1件の分類結果通知はHTTP 204。テスト投稿はDiscordの`#通知`に表示。2026-09-27の画面確認でチャンネルはミュートされず「全メッセージ」（カテゴリー既定）、macOSのDiscord通知許可もon（デスクトップ/通知センター/ロック画面有効）。今回の追加テストもWebhook HTTP 204で受理。実際のOSバナーまたはモバイル端末で受信した瞬間は観測できていない。X取得結果通知はQA-03待ち。 |
+| 自動ジョブの通知 | **Discord表示・通知設定確認済み／端末配信の確認待ち** | 実ブックマーク1/1件の分類結果通知はHTTP 204。テスト投稿はDiscordの`#通知`に表示。2026-09-27の画面確認でチャンネルはミュートされず「全メッセージ」（カテゴリー既定）、macOSのDiscord通知許可もon（デスクトップ/通知センター/ロック画面有効）。2026-10-01にメンションなしの端末通知テストを1回試行したが、zshの予約済み変数`status`との衝突でHTTP応答コードを取得できなかった。重複通知を避けて再送せず、端末に届いたかはユーザー確認待ち。X取得結果通知はQA-03待ち。 |
 | X API | **外部待ち** | 過去に403 `spend-cap-reached`。開発者ポータルはログイン要求となり、現在の利用枠を確認できなかった。回復をユーザーへ確認中。X APIは呼んでいない。 |
-| AI分類 | **実ブックマーク1件の分類・保存確認完了** | OpenAI CLI OAuth / `gpt-5.6-luna`、要求設定`xhigh`、既定`llm`。通常分類APIの選択ID経路で1件を分類・保存。既存カテゴリ・本文等を維持。CLIはread-only・一時セッションを明示する。 |
-| Git | **originと同期済み** | 2026-09-27に`codex/obsidian-auto-archive`のHEADとupstreamが一致し、作業ツリーcleanを確認。本追記を含む最新コミットもoriginへpush済み。ユーザーLaunchAgent設定はGit管理外。 |
+| AI分類 | **GPT-6 Lunaへ切替済み（実分類は未再確認）** | Settings APIの保存値は`gpt-6-luna`、OpenAI OAuth CLI。ChatGPTアプリ同梱Codex CLI 0.158.0-alpha.2.1で`gpt-6-luna` + `xhigh`の短いread-only呼び出しが成功。直近の実ブックマーク分類は旧GPT-5.6 Lunaのため、新モデルでの実分類は未確認。 |
+| Git | **今回の変更は未コミット** | 本変更で作業ツリーが更新された。`.env.local`はGit管理対象外。コミットやpushは依頼されていない。 |
+
+## MODEL-01 — GPT-6 Lunaへ切り替える
+
+**状態: 完了。** ユーザー指示: 旧GPT-5.6 Lunaを使わず、今後は`gpt-6-luna`を`xhigh`で使う。
+
+**範囲:** 実行中Codex CLIで短いread-only呼び出しによりモデルと推論設定が受理されることを確認し、Siftlyの`codexCliModel`設定を`gpt-6-luna`へ更新する。分類コードの推論強度は既に`xhigh`を渡している。設定画面に旧モデルの利用可能説明があれば、誤解を招かない表示へ直す。
+
+**実施・証拠:** ChatGPTアプリ同梱CLI `0.158.0-alpha.2.1`で`gpt-6-luna` + `xhigh`を指定したread-only応答が`OK`で終了。PATH上の旧CLI `0.153.0`は400で拒否されたため、`.env.local`の`CODEX_CLI_PATH`を同梱版へ設定。Settings APIで`codexCliModel=gpt-6-luna`を保存し、再起動後にprovider=`openai`、auth=`cli`、model=`gpt-6-luna`、Codex CLI利用可能を確認。分類コードは引き続き`reasoningEffort: 'xhigh'`を渡す。分類APIとX APIは実行していない。
+
+### UI-01 — 2026-09-29のChunkLoadError調査
+
+**状態: 調査済み・ユーザー画面の再読込確認待ち。** スクリーンショットはTurbopackのHMRクライアントchunk読み込み失敗。担当Codexが本体・配信ファイル・新規ブラウザー表示を読み取り中心で確認する。復旧操作は必要性を確認してから対象を限定する。
+
+**確認結果:** LaunchAgentはrunning（PID 3735）、15000番のlistenerはPID 5225。`/settings`と同ページのJS 19ファイルはHTTP 200。画像の`c7192189`ファイルもHTTP 200で、別chunkを指す288-byteのchunk listだった。新しいブラウザータブでは設定画面を表示できた。分類状態はidle。今回の読み込み失敗は再現しておらず、発生時の通信失敗やブラウザー状態は未特定。過去ログにENOSPCがあるが、現在の空きは93GiBであり、今回の原因と結び付ける証拠はない。
+
+**次の手順:** エラーが残る元のタブを再読み込みする。再発時は該当タブのURL・失敗した通信とconsoleを確認する。コード変更・本体再起動・キャッシュ削除は行っていない。AgentMemoryはcanonical project IDのマーカーがなく、ID確認コマンドもIDを返さなかったため、案件検索・保存を保留した。
+
+### QA-03 追記 — 2026-09-29の手動取得失敗
+
+**状態: X利用枠の回復待ち。** 手動取得の直近記録は`POST /api/import/x-oauth/fetch` HTTP 403。X連携statusはconfigured/connectedがtrueで、tokenExpiredはfalse。最後に記録されたX上流のエラーは`spend-cap-reached`だが、そのログに今回のHTTP 403の応答本文は残っていないため、今回も同じ理由と断定しない。定期取得Agentはdisabledかつ未登録を確認し、追加のX取得要求は送っていない。
+
+**UI修正・検証:** 取得APIの失敗応答が`warnings[0].message`だけを返す場合、手動画面もその理由を表示する。従来は`error`がないと一律「取得に失敗しました」だった。`tsc --noEmit`、対象ESLint、`git diff --check`は成功。実Xへの再取得は未実施。API側の403/利用枠分類や取得再開条件は変更していない。
 
 ## Phase 0 — 実装前に再利用する契約
 
@@ -73,7 +95,7 @@ flowchart LR
 - **通常分類の対象**: `POST /api/categorize`に`force:false`を渡す。現在は`enrichedAt`が未設定かつゴミ箱でないBookmarkを対象にする（同ファイル:258–265）。手動フィードバックを保護しながら保存する。
 - **分類エンジン**: `getCategoryEngine()`（`lib/categorizer.ts:161–171`）。環境変数未設定時の既定値は`llm`。
 - **分類結果保存**: `writeCategoryResults(results, options?)`（同ファイル:556–629）は保存されたBookmark IDの配列を返す。分類数はAI応答数ではなく、この保存結果を基準にする。
-- **Codex CLI**: `codexPrompt(prompt, { model, reasoningEffort, timeoutMs })`（`lib/codex-cli.ts`）。`CODEX_CLI_PATH`を優先する。`--ignore-user-config --skip-git-repo-check --sandbox read-only --ephemeral`を明示し、アプリ側のモデル・推論設定を渡す。GPT-5.6 Lunaと`xhigh`の要求は`__tests__/categorizer-partial-response.test.ts`、CLI権限は`__tests__/codex-cli.test.ts`で検証する。
+- **Codex CLI**: `codexPrompt(prompt, { model, reasoningEffort, timeoutMs })`（`lib/codex-cli.ts`）。`CODEX_CLI_PATH`を優先する。`--ignore-user-config --skip-git-repo-check --sandbox read-only --ephemeral`を明示し、アプリ側のモデル・推論設定を渡す。分類経路は設定モデルと`xhigh`を渡し、CLI権限は`__tests__/codex-cli.test.ts`で検証する。
 - **既存定期実行**: `scripts/siftly-scheduled-task.sh`がHTTP経由で取り込み・分類APIを呼び、分類は最大6時間ポーリングする。Webhook送信関数も同ファイル内にある。
 
 ### 避けること
@@ -257,7 +279,7 @@ launchctl print gui/501/com.moemic.siftly.live-import
 - Siftly本体がログイン時に起動し、終了時は復帰し、localhost:15000/settingsが開く。
 - 取得が3〜4日ごと、分類が週1回動き、スリープ復帰時に欠落を回収する。分類は保存済みの未分類投稿を処理する。
 - 途中失敗/ページ継続/利用枠の状態を成功と誤認せず、再開できる。
-- GPT-5.6 Luna、OpenAI Codex CLI OAuth、`xhigh`で実ブックマーク分類が確認できる。
+- GPT-6 Luna、OpenAI Codex CLI OAuth、`xhigh`で実ブックマーク分類が確認できる。
 - 実行結果がDiscordへ届き、Webhook障害で元処理を二重実行しない。
 - X quota中に無用な実取得を繰り返さず、回復後の取得が重複やゴミ箱を壊さない。
 
